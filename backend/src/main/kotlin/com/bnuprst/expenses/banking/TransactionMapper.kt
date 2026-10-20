@@ -1,0 +1,39 @@
+package com.bnuprst.expenses.banking
+
+import com.bnuprst.expenses.transactions.NewTransaction
+import java.security.MessageDigest
+import java.time.LocalDate
+
+object TransactionMapper {
+
+    /**
+     * Maps booked transactions; pending ones are skipped because banks often assign a different reference
+     * once they book, which would create duplicates. Transactions without a bank reference get a content
+     * hash, with an occurrence index so two identical purchases on the same day both survive.
+     */
+    fun map(page: List<EbTransaction>, today: LocalDate = LocalDate.now()): List<NewTransaction> {
+        val seen = mutableMapOf<String, Int>()
+        return page.filter { it.status == null || it.status == "BOOK" }.map { t ->
+            val debit = t.creditDebitIndicator.equals("DBIT", ignoreCase = true)
+            val amount = t.transactionAmount.amount.toBigDecimal().abs().let { if (debit) it.negate() else it }
+            val counterparty = (if (debit) t.creditor?.name else t.debtor?.name)?.trim()?.takeIf { it.isNotEmpty() }
+            val description = t.remittanceInformation?.filter { it.isNotBlank() }?.joinToString(" ")?.takeIf { it.isNotBlank() }
+                ?: t.note?.takeIf { it.isNotBlank() }
+                ?: counterparty
+                ?: t.bankTransactionCode?.description
+                ?: "(no description)"
+            val date = (t.bookingDate ?: t.valueDate ?: t.transactionDate)?.let(LocalDate::parse) ?: today
+            val externalId = t.entryReference?.takeIf { it.isNotBlank() }
+                ?: t.transactionId?.takeIf { it.isNotBlank() }
+                ?: run {
+                    val base = sha256("$date|${amount.toPlainString()}|${t.transactionAmount.currency}|$description|${counterparty.orEmpty()}")
+                    val n = seen.merge(base, 1, Int::plus)!!
+                    "h:$base:$n"
+                }
+            NewTransaction(externalId, date, amount, t.transactionAmount.currency, description.trim(), counterparty)
+        }
+    }
+
+    private fun sha256(s: String): String =
+        MessageDigest.getInstance("SHA-256").digest(s.toByteArray()).take(16).joinToString("") { "%02x".format(it) }
+}

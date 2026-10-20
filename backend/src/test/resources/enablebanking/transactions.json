@@ -1,0 +1,48 @@
+{
+  "transactions": [
+    {
+      "entry_reference": "REF-1",
+      "transaction_amount": {"currency": "EUR", "amount": "23.45"},
+      "credit_debit_indicator": "DBIT",
+      "status": "BOOK",
+      "booking_date": "2026-10-12",
+      "value_date": "2026-10-12",
+      "creditor": {"name": "K-Market Kamppi"},
+      "remittance_information": ["K-MARKET KAMPPI 12.10"]
+    },
+    {
+      "entry_reference": "REF-2",
+      "transaction_amount": {"currency": "EUR", "amount": "3200.00"},
+      "credit_debit_indicator": "CRDT",
+      "status": "BOOK",
+      "booking_date": "2026-10-15",
+      "debtor": {"name": "ACME Oy"},
+      "remittance_information": ["Salary October"]
+    },
+    {
+      "transaction_amount": {"currency": "EUR", "amount": "3.50"},
+      "credit_debit_indicator": "DBIT",
+      "status": "BOOK",
+      "booking_date": "2026-10-16",
+      "creditor": {"name": "Cafe Regatta"},
+      "remittance_information": ["CAFE REGATTA"]
+    },
+    {
+      "transaction_amount": {"currency": "EUR", "amount": "3.50"},
+      "credit_debit_indicator": "DBIT",
+      "status": "BOOK",
+      "booking_date": "2026-10-16",
+      "creditor": {"name": "Cafe Regatta"},
+      "remittance_information": ["CAFE REGATTA"]
+    },
+    {
+      "entry_reference": "PEND-1",
+      "transaction_amount": {"currency": "EUR", "amount": "15.00"},
+      "credit_debit_indicator": "DBIT",
+      "status": "PDNG",
+      "transaction_date": "2026-10-19",
+      "remittance_information": ["PENDING SHOP"]
+    }
+  ],
+  "continuation_key": "cont-1"
+}

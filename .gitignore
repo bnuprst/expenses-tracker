@@ -1,0 +1,11 @@
+.gradle/
+build/
+.kotlin/
+.idea/
+*.iml
+local.properties
+.env
+*.pem
+*.key
+deploy/secrets/
+android/app/release/
