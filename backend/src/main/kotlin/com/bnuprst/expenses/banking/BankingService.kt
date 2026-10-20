@@ -6,6 +6,7 @@ import com.bnuprst.expenses.config.EnableBankingConfig
 import com.bnuprst.expenses.db.BankAccounts
 import com.bnuprst.expenses.db.BankConnections
 import com.bnuprst.expenses.db.SyncRuns
+import com.bnuprst.expenses.db.Transactions
 import com.bnuprst.expenses.db.WalletMembers
 import com.bnuprst.expenses.db.dbQuery
 import com.bnuprst.expenses.shared.AspspDto
@@ -24,6 +25,7 @@ import org.jetbrains.exposed.sql.ResultRow
 import org.jetbrains.exposed.sql.SortOrder
 import org.jetbrains.exposed.sql.and
 import org.jetbrains.exposed.sql.insert
+import org.jetbrains.exposed.sql.max
 import org.jetbrains.exposed.sql.selectAll
 import org.jetbrains.exposed.sql.update
 import org.slf4j.LoggerFactory
@@ -231,8 +233,8 @@ class BankingService(
             val accounts = dbQuery { BankAccounts.selectAll().where { BankAccounts.connectionId eq connectionId }.toList() }
             val today = LocalDate.ofInstant(clock(), ZoneOffset.UTC)
             for (acc in accounts) {
-                // Re-fetch a week of overlap: banks book late and dedup makes this safe.
-                val from = acc[BankAccounts.lastBookingDate]?.minusDays(7) ?: today.minusDays(config.initialHistoryDays)
+                val from = acc[BankAccounts.lastBookingDate]?.minusDays(7) // a week of overlap: banks book late, dedup makes it safe
+                    ?: firstSyncStart(walletId, today)
                 var key: String? = null
                 var maxDate = acc[BankAccounts.lastBookingDate]
                 do {
@@ -261,6 +263,21 @@ class BankingService(
             }
         }
         SyncResultDto(fetched, inserted, error)
+    }
+
+    /**
+     * The first pull goes back EB_INITIAL_HISTORY_DAYS, but never into dates already covered by imported
+     * history (e.g. from Actual), which would otherwise appear twice under different ids.
+     */
+    private suspend fun firstSyncStart(walletId: Long, today: LocalDate): LocalDate {
+        val default = today.minusDays(config.initialHistoryDays)
+        val maxDate = Transactions.bookingDate.max()
+        val lastImported: LocalDate? = dbQuery {
+            Transactions.select(maxDate)
+                .where { (Transactions.walletId eq walletId) and Transactions.bankAccountId.isNull() and Transactions.externalId.isNotNull() }
+                .singleOrNull()?.get(maxDate)
+        }
+        return if (lastImported != null && lastImported >= default) lastImported.plusDays(1) else default
     }
 
     private suspend fun setStatus(connectionId: Long, status: ConnectionStatus) = dbQuery {

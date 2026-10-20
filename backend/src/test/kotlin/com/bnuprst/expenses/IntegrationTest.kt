@@ -22,6 +22,7 @@ import com.bnuprst.expenses.shared.BankConnectionDto
 import com.bnuprst.expenses.shared.CategoryDto
 import com.bnuprst.expenses.shared.CategorySource
 import com.bnuprst.expenses.shared.ConnectionStatus
+import com.bnuprst.expenses.shared.ImportResult
 import com.bnuprst.expenses.shared.SyncResultDto
 import com.bnuprst.expenses.shared.TransactionDto
 import com.bnuprst.expenses.shared.TxnStatus
@@ -72,6 +73,7 @@ class FakeBank : EnableBankingApi {
     var lastAuth: EbAuthRequest? = null
     var pages: List<EbTransaction> = emptyList()
     var transactionCalls = 0
+    val dateFroms = mutableListOf<LocalDate>()
 
     override suspend fun aspsps(country: String?) = listOf(EbAspsp("Nordea", "FI", maximumConsentValidity = 90L * 86400))
     override suspend fun startAuth(request: EbAuthRequest) = EbAuthResponse("https://bank.example/auth?s=${request.state}").also { lastAuth = request }
@@ -80,6 +82,7 @@ class FakeBank : EnableBankingApi {
             listOf(EbAccount("uid-1", EbAccountId(iban = "FI2112345600000785"), "hash-1", "Main", "EUR"))
     override suspend fun transactions(accountUid: String, dateFrom: LocalDate, continuationKey: String?): EbTransactionsPage {
         transactionCalls++
+        dateFroms += dateFrom
         return EbTransactionsPage(pages)
     }
 }
@@ -206,5 +209,52 @@ class IntegrationTest {
         assertEquals(ConnectionStatus.ACTIVE, conn.status)
         assertEquals("•••• 0785", conn.accounts.single().ibanMasked)
         assertEquals(false, conn.renewSoon)
+    }
+
+    @Test
+    fun `import is idempotent, seeds merchant memory and bounds the first bank sync`() = app { client ->
+        val token = client.register("anna@example.com").token
+        val wallet = client.createWallet(token)
+        val recent = LocalDate.now().minusDays(10)
+        val body = """
+            {"source":"actual",
+             "categories":[{"name":"Food","kind":"EXPENSE"},{"name":"Paycheck","kind":"INCOME"},{"name":"groceries","kind":"EXPENSE"}],
+             "transactions":[
+               {"externalId":"t1","date":"2025-01-03","amount":"-20.10","payee":"LIDL SP Z O O","category":"Food"},
+               {"externalId":"t2","date":"2025-02-03","amount":"-11.00","payee":"Lidl","category":"Food"},
+               {"externalId":"t3","date":"2025-02-05","amount":"-5.00","payee":"Lidl","category":"Groceries"},
+               {"externalId":"t4","date":"$recent","amount":"4000.00","payee":"ACME","category":"Paycheck"},
+               {"externalId":"t5","date":"2025-03-01","amount":"-9.99","payee":"Mystery shop"}
+             ]}
+        """.trimIndent()
+        val first: ImportResult = client.post("/api/v1/wallets/${wallet.id}/import") { bearerAuth(token); json(); setBody(body) }.body()
+        assertEquals(ImportResult(received = 5, inserted = 5, categoriesCreated = 2, merchantsLearned = 2), first)
+        val again: ImportResult = client.post("/api/v1/wallets/${wallet.id}/import") { bearerAuth(token); json(); setBody(body) }.body()
+        assertEquals(0, again.inserted)
+
+        val categories: List<CategoryDto> = client.get("/api/v1/wallets/${wallet.id}/categories") { bearerAuth(token) }.body()
+        val food = categories.single { it.name == "Food" }
+        val txns: List<TransactionDto> = client.get("/api/v1/wallets/${wallet.id}/transactions") { bearerAuth(token) }.body()
+        assertEquals(TxnStatus.UNCATEGORIZED, txns.single { it.amount == "-9.99" }.status)
+
+        // Majority vote: Lidl was Food twice, Groceries once.
+        val next = client.addTxn(token, wallet.id, "LIDL 1234 WARSZAWA", "LIDL")
+        assertEquals(CategorySource.MEMORY, next.categorySource)
+        assertEquals(food.id, next.categoryId)
+        assertEquals(0, llm.calls)
+
+        // A member cannot import.
+        client.register("ben@example.com")
+        client.post("/api/v1/wallets/${wallet.id}/members") { bearerAuth(token); json(); setBody(mapOf("email" to "ben@example.com")) }
+        val ben = client.post("/api/v1/auth/login") { json(); setBody(mapOf("email" to "ben@example.com", "password" to "password123")) }.body<AuthResponse>().token
+        assertEquals(HttpStatusCode.Forbidden, client.post("/api/v1/wallets/${wallet.id}/import") { bearerAuth(ben); json(); setBody(body) }.status)
+
+        // The first bank pull starts the day after the imported history ends, not 90 days back.
+        val auth: BankAuthResponse = client.post("/api/v1/wallets/${wallet.id}/bank-connections") {
+            bearerAuth(token); json(); setBody(mapOf("aspspName" to "Nordea", "country" to "FI"))
+        }.body()
+        client.get("/api/v1/banking/callback?state=${bank.lastAuth!!.state}&code=abc")
+        client.post("/api/v1/bank-connections/${auth.connectionId}/sync") { bearerAuth(token) }
+        assertEquals(recent.plusDays(1), bank.dateFroms.first())
     }
 }

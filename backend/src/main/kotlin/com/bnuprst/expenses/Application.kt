@@ -45,6 +45,7 @@ class Services(
     val auth: AuthService,
     val wallets: WalletService,
     val transactions: TransactionService,
+    val imports: com.bnuprst.expenses.transactions.ImportService,
     val banking: BankingService?,
 )
 
@@ -60,7 +61,7 @@ fun buildServices(config: AppConfig, llmProvider: LlmProvider? = null, bankingAp
         val api = bankingApi ?: EnableBankingClient(HttpClient(CIO) { install(HttpTimeout) { requestTimeoutMillis = 60_000 } }, eb)
         BankingService(api, eb, wallets, transactions)
     }
-    return Services(jwt, AuthService(jwt), wallets, transactions, banking)
+    return Services(jwt, AuthService(jwt), wallets, transactions, com.bnuprst.expenses.transactions.ImportService(wallets), banking)
 }
 
 fun main() {

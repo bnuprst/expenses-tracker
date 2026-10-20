@@ -55,6 +55,22 @@ class LlmTest {
         val body = Json.parseToJsonElement(seenBody).jsonObject
         assertEquals("test-model", body["model"]!!.jsonPrimitive.content)
         assertEquals("json_object", body["response_format"]!!.jsonObject["type"]!!.jsonPrimitive.content)
+        assertNull(body["temperature"], "reasoning models reject non-default temperature; only send when configured")
+        assertNull(body["reasoning_effort"])
+    }
+
+    @Test
+    fun `optional sampling parameters are sent when configured`() = runTest {
+        var seenBody = ""
+        val engine = MockEngine { req ->
+            seenBody = (req.body as TextContent).text
+            respond("""{"choices":[{"message":{"content":"{}"}}]}""", HttpStatusCode.OK, headersOf(HttpHeaders.ContentType, "application/json"))
+        }
+        val provider = OpenAiCompatibleProvider(HttpClient(engine) { install(HttpTimeout) }, config.copy(temperature = 0.0, reasoningEffort = "low"))
+        provider.completeJson("s", "u")
+        val body = Json.parseToJsonElement(seenBody).jsonObject
+        assertEquals("0.0", body["temperature"]!!.jsonPrimitive.content)
+        assertEquals("low", body["reasoning_effort"]!!.jsonPrimitive.content)
     }
 
     @Test

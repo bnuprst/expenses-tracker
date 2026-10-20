@@ -142,3 +142,32 @@ data class SyncResultDto(val fetched: Int, val inserted: Int, val error: String?
 
 @Serializable
 data class ErrorResponse(val error: String)
+
+// --- import (e.g. history from Actual Budget) ---
+
+@Serializable
+data class ImportCategory(val name: String, val kind: CategoryKind = CategoryKind.EXPENSE)
+
+@Serializable
+data class ImportTransaction(
+    /** Stable id from the source system, used for idempotent re-imports. */
+    val externalId: String,
+    val date: String,
+    val amount: String,
+    val currency: String? = null,
+    val payee: String? = null,
+    val notes: String? = null,
+    /** Category name; created when missing. Null = uncategorized in the source. */
+    val category: String? = null,
+    val account: String? = null,
+)
+
+@Serializable
+data class ImportRequest(
+    val source: String,
+    val categories: List<ImportCategory> = emptyList(),
+    val transactions: List<ImportTransaction>,
+)
+
+@Serializable
+data class ImportResult(val received: Int, val inserted: Int, val categoriesCreated: Int, val merchantsLearned: Int)

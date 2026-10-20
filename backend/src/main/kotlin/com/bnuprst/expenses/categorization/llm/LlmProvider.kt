@@ -39,7 +39,8 @@ class OpenAiCompatibleProvider(
     override suspend fun completeJson(system: String, user: String): String {
         val body = buildJsonObject {
             put("model", config.model)
-            put("temperature", 0)
+            config.temperature?.let { put("temperature", it) }
+            config.reasoningEffort?.let { put("reasoning_effort", it) }
             putJsonObject("response_format") { put("type", "json_object") }
             putJsonArray("messages") {
                 addJsonObject { put("role", "system"); put("content", system) }

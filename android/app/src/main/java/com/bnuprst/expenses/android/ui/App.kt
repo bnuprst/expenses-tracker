@@ -225,7 +225,7 @@ private fun CategoryPicker(txn: TransactionDto, categories: List<CategoryDto>, o
 
 @Composable
 private fun BanksTab(state: UiState, vm: AppViewModel) {
-    var country by remember { mutableStateOf("FI") }
+    var country by remember { mutableStateOf("PL") }
     var memberEmail by remember { mutableStateOf("") }
     LazyColumn(contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         items(state.connections, key = { it.id }) { c -> ConnectionCard(c, vm) }

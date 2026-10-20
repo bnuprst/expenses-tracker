@@ -5,6 +5,7 @@ import com.bnuprst.expenses.shared.CreateBankConnectionRequest
 import com.bnuprst.expenses.shared.CreateRuleRequest
 import com.bnuprst.expenses.shared.CreateTransactionRequest
 import com.bnuprst.expenses.shared.CreateWalletRequest
+import com.bnuprst.expenses.shared.ImportRequest
 import com.bnuprst.expenses.shared.LoginRequest
 import com.bnuprst.expenses.shared.RegisterRequest
 import com.bnuprst.expenses.shared.TxnStatus
@@ -97,6 +98,10 @@ private fun Route.walletRoutes(s: Services) = route("/wallets") {
         post("/transactions") {
             val req = call.receive<CreateTransactionRequest>()
             call.respond(HttpStatusCode.Created, s.transactions.create(call.userId(), call.longParam("walletId"), req))
+        }
+        post("/import") {
+            val req = call.receive<ImportRequest>()
+            call.respond(s.imports.import(call.userId(), call.longParam("walletId"), req))
         }
         get("/review") {
             call.respond(s.transactions.list(call.userId(), call.longParam("walletId"), null, null, TxnStatus.REVIEW, null))

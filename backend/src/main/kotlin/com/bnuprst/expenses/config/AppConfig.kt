@@ -49,9 +49,11 @@ data class AppConfig(
                         (opt("LLM_API_KEY") != null || opt("LLM_BASE_URL") != null),
                     baseUrl = get("LLM_BASE_URL", "https://api.openai.com/v1").trimEnd('/'),
                     apiKey = opt("LLM_API_KEY"),
-                    model = get("LLM_MODEL", "gpt-4.1-mini"),
+                    model = get("LLM_MODEL", "gpt-6-luna"),
                     confidenceThreshold = get("LLM_CONFIDENCE_THRESHOLD", "0.7").toDouble(),
                     timeout = Duration.ofSeconds(get("LLM_TIMEOUT_SECONDS", "30").toLong()),
+                    temperature = opt("LLM_TEMPERATURE")?.toDouble(),
+                    reasoningEffort = opt("LLM_REASONING_EFFORT"),
                 ),
             )
         }
@@ -84,4 +86,8 @@ data class LlmConfig(
     val model: String,
     val confidenceThreshold: Double,
     val timeout: Duration,
+    /** Sent only when set: some reasoning models (GPT-5/6 family) reject non-default temperatures. */
+    val temperature: Double? = null,
+    /** OpenAI reasoning models: none/minimal/low/medium/high. Sent only when set. */
+    val reasoningEffort: String? = null,
 )

@@ -6,7 +6,8 @@ A self-hosted family expense tracker. It pulls bank transactions through [Enable
 shared/    Kotlin DTOs used by the backend and the Android app
 backend/   Ktor + Postgres API, categorization pipeline, bank sync
 android/   Jetpack Compose client
-deploy/    Docker Compose, Caddy snippet, env template
+deploy/    deploy/backup/restore scripts, systemd timer (prod compose file at the root)
+tools/     actual-import: one-off import of Actual Budget history
 ```
 
 ## How categorization works
@@ -51,16 +52,33 @@ export JWT_SECRET=dev
 TEST_DB_URL=jdbc:postgresql://localhost:5432/expenses_test ./gradlew :backend:test
 ```
 
-### Production (behind your existing Caddy)
-```bash
-cd deploy
-cp .env.example .env                 # fill in secrets
-mkdir -p secrets && cp /path/to/enablebanking-private.pem secrets/enablebanking.pem
-docker compose up -d --build
-```
-Then add `Caddyfile.snippet` to your Caddyfile. Make sure `expenses-api` and Caddy share the external `caddy` network; rename it in `docker-compose.yml` if yours differs.
+### Production
+On the netcup VPS the stack runs behind the shared edge Caddy from
+[bnuprst/vps-infra](https://github.com/bnuprst/vps-infra). The step-by-step cutover is in `apps/expenses-tracker/README.md` there (DNS, deploy key, edge override, importing Actual, retiring Actual).
 
-In the Enable Banking control panel, register `EB_REDIRECT_URL` (`https://<your host>/api/v1/banking/callback`) as an allowed redirect URL for the application.
+| File | What |
+|---|---|
+| `docker-compose.prod.yml` | `app` (built on the box) + `db` (Postgres 16). Publishes no ports. |
+| `.env.example` | Copy to `.env` (chmod 600). |
+| `.secrets/enablebanking.pem` | The Enable Banking private key, mounted as a Docker secret. |
+| `deploy/deploy.sh` | Builds, starts and waits for healthy. Adds `-f docker-compose.edge.yml` when vps-infra's `bin/attach-app` has installed it. |
+| `deploy/backup.sh` / `restore.sh` | Nightly `pg_dump` to `/var/backups/expenses-tracker` with 14-day retention; restore asks for confirmation. |
+| `deploy/systemd/` | Backup timer (~03:40). |
+
+```bash
+cd /opt/expenses-tracker && git pull --ff-only && deploy/deploy.sh
+```
+
+In the Enable Banking control panel, register `EB_REDIRECT_URL` (`https://expenses.bookkeebara.com/api/v1/banking/callback`) as a redirect URL of the application.
+
+### Importing history from Actual Budget
+`tools/actual-import` reads a budget through Actual's official API and posts it to `POST /api/v1/wallets/{id}/import`:
+- **Idempotent:** rows are keyed on Actual's transaction id, so re-running inserts nothing new.
+- **Categories:** created by name. Split transactions are imported as their parts; transfers go to `Transfers`.
+- **Your decisions carry over:** categories chosen in Actual are stored as manual and seed merchant memory, using the majority category per merchant. The LLM is never called during an import.
+- **No double-counting:** a bank account's first sync starts the day after the imported history ends, so nothing is counted twice.
+
+Run it on the box as described in vps-infra's runbook, with `--dry-run` first.
 
 ### LLM providers
 Any OpenAI-compatible `/chat/completions` endpoint works:
@@ -71,7 +89,7 @@ Any OpenAI-compatible `/chat/completions` endpoint works:
 | Ollama     | `http://ollama:11434/v1`         | not needed    |
 | OpenRouter | `https://openrouter.ai/api/v1`   | required      |
 
-Set `LLM_MODEL` to a model your provider serves. With no key and no base URL set, the LLM step is skipped, and unknown merchants stay uncategorized until you categorize them.
+The default is OpenAI `gpt-6-luna`, with `LLM_REASONING_EFFORT=low` in `.env.example`. `temperature` and `reasoning_effort` are only sent when `LLM_TEMPERATURE` / `LLM_REASONING_EFFORT` are set. GPT-5/6 models reject non-default temperatures, and other providers may not accept `reasoning_effort`. When using a non-OpenAI provider, set `LLM_MODEL` to a model that provider serves. With no key and no base URL set, the LLM step is skipped, and unknown merchants stay uncategorized until you categorize them.
 
 ## Android app
 
@@ -95,6 +113,7 @@ cd android
 | GET | `/wallets/{id}/review` | review queue |
 | PATCH | `/transactions/{id}` | `{categoryId}`, learns merchant memory |
 | GET | `/banking/aspsps?country=FI` | available banks |
+| POST | `/wallets/{id}/import` | owner only; bulk history import (see above) |
 | POST | `/wallets/{id}/bank-connections` | `{aspspName, country}` → `{connectionId, authUrl}` |
 | GET | `/bank-connections?wallet=` | status, consent expiry, accounts, last sync |
 | POST | `/bank-connections/{id}/sync`, `/bank-connections/{id}/reauthorize` | |
