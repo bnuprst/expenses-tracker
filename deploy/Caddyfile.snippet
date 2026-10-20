@@ -1,0 +1,5 @@
+# Add to your Caddyfile; Caddy must share the `caddy` docker network with expenses-api.
+expenses.example.com {
+    encode gzip
+    reverse_proxy expenses-api:8080
+}
