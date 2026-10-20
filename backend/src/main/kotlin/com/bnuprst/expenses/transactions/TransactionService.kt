@@ -30,6 +30,24 @@ import java.math.BigDecimal
 import java.time.LocalDate
 import java.time.format.DateTimeParseException
 
+/**
+ * A first bank sync starts on the last day of imported history (inclusive, so nothing booked later that day
+ * is lost). On and before that day, a bank row matching an imported row by date and amount is the same
+ * transaction; each imported row absorbs at most one bank row not already stored. Built fresh for every
+ * sync whose window reaches that day, so the result doesn't depend on page order or on which sync saw it.
+ */
+class ImportBoundary(val lastDate: LocalDate, imported: List<Pair<LocalDate, BigDecimal>>) {
+    private val remaining = imported.groupingBy { it.first to it.second.stripTrailingZeros() }.eachCount().toMutableMap()
+
+    fun covers(t: NewTransaction): Boolean {
+        if (t.bookingDate > lastDate) return false
+        val key = t.bookingDate to t.amount.stripTrailingZeros()
+        val n = remaining[key] ?: return false
+        if (n == 1) remaining.remove(key) else remaining[key] = n - 1
+        return true
+    }
+}
+
 /** A transaction to be stored, before categorization. */
 data class NewTransaction(
     val externalId: String?,
@@ -65,6 +83,55 @@ class TransactionService(
         }
     }
 
+    suspend fun reviewQueue(userId: Long, walletId: Long): List<TransactionDto> {
+        wallets.requireRole(userId, walletId)
+        return dbQuery {
+            Transactions.selectAll()
+                .where {
+                    (Transactions.walletId eq walletId) and
+                        (Transactions.status inList listOf(TxnStatus.REVIEW.name, TxnStatus.UNCATEGORIZED.name))
+                }
+                .orderBy(Transactions.bookingDate to SortOrder.DESC, Transactions.id to SortOrder.DESC)
+                .limit(500)
+                .map { it.toDto() }
+        }
+    }
+
+    /**
+     * Gives bank rows that ended UNCATEGORIZED (LLM down, or a rule/memory added since) another pass.
+     * Bounded per run, and limited to bank rows, so a large import never fans out into LLM calls.
+     */
+    suspend fun retryUncategorized(walletId: Long, limit: Int = RETRY_LIMIT): Int {
+        val rows = dbQuery {
+            Transactions.selectAll()
+                .where {
+                    (Transactions.walletId eq walletId) and Transactions.bankAccountId.isNotNull() and
+                        (Transactions.status eq TxnStatus.UNCATEGORIZED.name)
+                }
+                .orderBy(Transactions.bookingDate to SortOrder.DESC)
+                .limit(limit)
+                .toList()
+        }
+        val session = categorizer.session(walletId)
+        var updated = 0
+        for (row in rows) {
+            val r = session.categorize(
+                TxnInput(row[Transactions.descriptionRaw], row[Transactions.counterparty], row[Transactions.amount], row[Transactions.currency], row[Transactions.merchantKey])
+            )
+            if (r.status == TxnStatus.UNCATEGORIZED) continue
+            updated += dbQuery {
+                // Only if still untouched: the user may have categorized it meanwhile.
+                Transactions.update({ (Transactions.id eq row[Transactions.id]) and (Transactions.status eq TxnStatus.UNCATEGORIZED.name) }) {
+                    it[categoryId] = r.categoryId
+                    it[categorySource] = r.source?.name
+                    it[confidence] = r.confidence
+                    it[status] = r.status.name
+                }
+            }
+        }
+        return updated
+    }
+
     suspend fun create(userId: Long, walletId: Long, req: CreateTransactionRequest): TransactionDto {
         wallets.requireRole(userId, walletId)
         val date = parseDate(req.bookingDate)
@@ -78,7 +145,7 @@ class TransactionService(
         val merchantKey = Normalizer.merchantKey(txn.counterparty, txn.description)
         if (req.categoryId != null) {
             return dbQuery {
-                DbCategorizationStore.learn(walletId, merchantKey, req.categoryId!!)
+                if (Normalizer.isLearnable(merchantKey)) DbCategorizationStore.learn(walletId, merchantKey, req.categoryId!!)
                 insertRow(walletId, null, txn, merchantKey, req.categoryId, CategorySource.MANUAL, 1.0, TxnStatus.CATEGORIZED)
             }
         }
@@ -90,7 +157,12 @@ class TransactionService(
      * Stores bank transactions, skipping ones already present for the account (dedup by external id),
      * and categorizes only the new ones. Returns the number inserted.
      */
-    suspend fun importBankTransactions(walletId: Long, bankAccountId: Long, items: List<NewTransaction>): Int {
+    suspend fun importBankTransactions(
+        walletId: Long,
+        bankAccountId: Long,
+        items: List<NewTransaction>,
+        importBoundary: ImportBoundary? = null,
+    ): Int {
         if (items.isEmpty()) return 0
         val unique = items.distinctBy { it.externalId }
         val existing = dbQuery {
@@ -98,7 +170,8 @@ class TransactionService(
                 .where { (Transactions.bankAccountId eq bankAccountId) and (Transactions.externalId inList unique.mapNotNull { it.externalId }) }
                 .mapNotNull { it[Transactions.externalId] }.toSet()
         }
-        val fresh = unique.filter { it.externalId !in existing }
+        // Existing ids first: a bank row stored on an earlier sync must not use up an imported row's match.
+        val fresh = unique.filter { it.externalId !in existing }.filterNot { importBoundary?.covers(it) == true }
         val session = categorizer.session(walletId)
         var inserted = 0
         for (txn in fresh) {
@@ -131,15 +204,17 @@ class TransactionService(
                 it[confidence] = 1.0
                 it[status] = TxnStatus.CATEGORIZED.name
             }
-            DbCategorizationStore.learn(walletId, merchantKey, categoryId)
-            Transactions.update({
-                (Transactions.walletId eq walletId) and (Transactions.merchantKey eq merchantKey) and
-                    (Transactions.status inList listOf(TxnStatus.REVIEW.name, TxnStatus.UNCATEGORIZED.name))
-            }) {
-                it[Transactions.categoryId] = categoryId
-                it[categorySource] = CategorySource.MEMORY.name
-                it[confidence] = 1.0
-                it[status] = TxnStatus.CATEGORIZED.name
+            if (Normalizer.isLearnable(merchantKey)) {
+                DbCategorizationStore.learn(walletId, merchantKey, categoryId)
+                Transactions.update({
+                    (Transactions.walletId eq walletId) and (Transactions.merchantKey eq merchantKey) and
+                        (Transactions.status inList listOf(TxnStatus.REVIEW.name, TxnStatus.UNCATEGORIZED.name))
+                }) {
+                    it[Transactions.categoryId] = categoryId
+                    it[categorySource] = CategorySource.MEMORY.name
+                    it[confidence] = 1.0
+                    it[status] = TxnStatus.CATEGORIZED.name
+                }
             }
             Transactions.selectAll().where { Transactions.id eq txnId }.single().toDto()
         }
@@ -210,6 +285,8 @@ class TransactionService(
         throw BadRequest("Invalid date, expected yyyy-MM-dd")
     }
 }
+
+private const val RETRY_LIMIT = 50
 
 fun ResultRow.toDto() = TransactionDto(
     id = this[Transactions.id],

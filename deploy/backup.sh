@@ -12,7 +12,12 @@ RETENTION_DAYS=14
 COMPOSE=(docker compose -f docker-compose.prod.yml)
 [[ -f docker-compose.edge.yml ]] && COMPOSE+=(-f docker-compose.edge.yml)
 
-install -d -m 700 "${BACKUP_DIR}"
+# /var/backups is root's: the directory is created once with sudo (bootstrap.sh, or the vps-infra runbook).
+if ! install -d -m 700 "${BACKUP_DIR}" 2>/dev/null || [[ ! -w "${BACKUP_DIR}" ]]; then
+  echo "Cannot write ${BACKUP_DIR}. Create it once with:" >&2
+  echo "  sudo install -d -m 700 -o $(id -un) -g $(id -gn) ${BACKUP_DIR}" >&2
+  exit 1
+fi
 archive="${BACKUP_DIR}/expenses-$(date -u +%Y%m%dT%H%M%SZ).dump"
 
 # Write to a temporary name first, so a failed dump never looks like a good one.

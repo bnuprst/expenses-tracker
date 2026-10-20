@@ -11,6 +11,13 @@ data class AppConfig(
     val llm: LlmConfig,
 ) {
     companion object {
+        /**
+         * A key makes any provider usable. Without one, only an explicitly configured self-hosted endpoint
+         * (Ollama, LM Studio) is - OpenAI's hosted API would answer every call with 401.
+         */
+        internal fun llmUsable(baseUrl: String?, apiKey: String?): Boolean =
+            apiKey != null || (baseUrl != null && !baseUrl.contains("api.openai.com"))
+
         fun fromEnv(env: Map<String, String> = System.getenv()): AppConfig {
             fun get(key: String, default: String? = null): String =
                 env[key]?.takeIf { it.isNotBlank() } ?: default ?: error("Missing required env var $key")
@@ -44,9 +51,7 @@ data class AppConfig(
                     )
                 },
                 llm = LlmConfig(
-                    // Enabled when a key is set (OpenAI & co.) or a base URL is set explicitly (Ollama needs no key).
-                    enabled = get("LLM_ENABLED", "true").toBoolean() &&
-                        (opt("LLM_API_KEY") != null || opt("LLM_BASE_URL") != null),
+                    enabled = get("LLM_ENABLED", "true").toBoolean() && llmUsable(opt("LLM_BASE_URL"), opt("LLM_API_KEY")),
                     baseUrl = get("LLM_BASE_URL", "https://api.openai.com/v1").trimEnd('/'),
                     apiKey = opt("LLM_API_KEY"),
                     model = get("LLM_MODEL", "gpt-6-luna"),

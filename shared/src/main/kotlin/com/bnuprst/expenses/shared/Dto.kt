@@ -171,3 +171,6 @@ data class ImportRequest(
 
 @Serializable
 data class ImportResult(val received: Int, val inserted: Int, val categoriesCreated: Int, val merchantsLearned: Int)
+
+@Serializable
+data class FinalizeImportResult(val merchantsLearned: Int, val recategorized: Int)

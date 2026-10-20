@@ -68,4 +68,17 @@ class EnableBankingTest {
         assertEquals(mapped.map { it.externalId }, TransactionMapper.map(page.transactions, LocalDate.parse("2026-10-20")).map { it.externalId })
         assertEquals("cont-1", page.continuationKey)
     }
+
+    @Test
+    fun `hash ids stay distinct across pages of one fetch`() {
+        val coffee = EbTransaction(
+            transactionAmount = EbAmount("PLN", "4.50"), creditDebitIndicator = "DBIT", status = "BOOK",
+            bookingDate = "2026-10-16", creditor = EbParty("Cafe"), remittanceInformation = listOf("CAFE"),
+        )
+        val seen = mutableMapOf<String, Int>()
+        val page1 = TransactionMapper.map(listOf(coffee), LocalDate.parse("2026-10-20"), seen)
+        val page2 = TransactionMapper.map(listOf(coffee), LocalDate.parse("2026-10-20"), seen)
+        assertNotEquals(page1.single().externalId, page2.single().externalId)
+        assertTrue(page2.single().externalId!!.endsWith(":2"))
+    }
 }

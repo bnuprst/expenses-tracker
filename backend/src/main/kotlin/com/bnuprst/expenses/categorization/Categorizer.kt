@@ -48,15 +48,18 @@ class Categorizer(
         private val llmCache = mutableMapOf<String, CategorizationResult>()
 
         suspend fun categorize(txn: TxnInput): CategorizationResult {
-            store.memoryLookup(walletId, txn.merchantKey)?.let {
-                return CategorizationResult(it, CategorySource.MEMORY, 1.0, TxnStatus.CATEGORIZED)
+            val learnable = Normalizer.isLearnable(txn.merchantKey)
+            if (learnable) {
+                store.memoryLookup(walletId, txn.merchantKey)?.let {
+                    return CategorizationResult(it, CategorySource.MEMORY, 1.0, TxnStatus.CATEGORIZED)
+                }
             }
             val rules = rules ?: store.rules(walletId).also { rules = it }
             RuleEngine.match(rules, txn)?.let {
                 return CategorizationResult(it.categoryId, CategorySource.RULE, 1.0, TxnStatus.CATEGORIZED)
             }
             if (llm == null) return UNCATEGORIZED
-            llmCache[txn.merchantKey]?.let { return it }
+            if (learnable) llmCache[txn.merchantKey]?.let { return it }
 
             val categories = categories ?: store.categories(walletId).also { categories = it }
             val result = try {
@@ -68,7 +71,7 @@ class Categorizer(
                 log.warn("LLM categorization failed for '{}': {}", txn.merchantKey, e.message)
                 return UNCATEGORIZED // not cached: a transient failure shouldn't stick for the batch
             }
-            llmCache[txn.merchantKey] = result
+            if (learnable) llmCache[txn.merchantKey] = result
             return result
         }
     }

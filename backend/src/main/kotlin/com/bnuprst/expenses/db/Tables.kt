@@ -75,6 +75,7 @@ object Transactions : Table("transactions") {
     val categorySource = varchar("category_source", 16).nullable()
     val confidence = double("confidence").nullable()
     val status = varchar("status", 16)
+    val sourceAccount = text("source_account").nullable()
     override val primaryKey = PrimaryKey(id)
 }
 

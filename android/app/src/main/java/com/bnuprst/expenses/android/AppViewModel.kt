@@ -71,10 +71,17 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun dismissMessage() = _state.update { it.copy(message = null) }
 
     fun authenticate(server: String, email: String, password: String, name: String?, register: Boolean) {
-        _state.update { it.copy(serverUrl = server.trim()) }
+        val url = server.trim()
+        // Release builds refuse cleartext anyway (no network security exception); say why up front instead
+        // of failing with a cryptic network error - and never send the password over http.
+        if (!url.startsWith("https://") && !(BuildConfig.DEBUG && url.startsWith("http://"))) {
+            _state.update { it.copy(message = "The server URL must start with https://") }
+            return
+        }
+        _state.update { it.copy(serverUrl = url) }
         launchTask {
             val res = if (register) api.register(email, password, name.orEmpty()) else api.login(email, password)
-            prefs.edit().putString("server", server.trim()).putString("token", res.token).putString("name", res.user.name).apply()
+            prefs.edit().putString("server", url).putString("token", res.token).putString("name", res.user.name).apply()
             _state.update { it.copy(loggedIn = true, userName = res.user.name) }
             refreshWallets()
         }

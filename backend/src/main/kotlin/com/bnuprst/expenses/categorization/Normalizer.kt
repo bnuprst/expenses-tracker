@@ -6,6 +6,7 @@ package com.bnuprst.expenses.categorization
  */
 object Normalizer {
     private const val MAX_TOKENS = 3
+    const val UNKNOWN = "unknown"
 
     private val prefixes = listOf(
         "card purchase", "card payment", "debit card", "contactless", "purchase", "payment to", "payment",
@@ -25,8 +26,14 @@ object Normalizer {
 
     fun merchantKey(counterparty: String?, description: String): String {
         val source = counterparty?.takeIf { it.isNotBlank() } ?: description
-        return normalize(source).ifEmpty { normalize(description) }.ifEmpty { "unknown" }
+        return normalize(source).ifEmpty { normalize(description) }.ifEmpty { UNKNOWN }
     }
+
+    /**
+     * The catch-all key groups unrelated transactions, so a decision about one of them must never be
+     * remembered or spread to the rest.
+     */
+    fun isLearnable(merchantKey: String) = merchantKey != UNKNOWN
 
     fun normalize(input: String): String {
         var s = input.lowercase()

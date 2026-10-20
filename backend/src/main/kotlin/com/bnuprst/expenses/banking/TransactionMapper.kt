@@ -10,9 +10,15 @@ object TransactionMapper {
      * Maps booked transactions; pending ones are skipped because banks often assign a different reference
      * once they book, which would create duplicates. Transactions without a bank reference get a content
      * hash, with an occurrence index so two identical purchases on the same day both survive.
+     *
+     * [seen] counts those hashes and must span every page of one account's fetch: identical rows can
+     * land on different pages, and a per-page counter would give them the same id.
      */
-    fun map(page: List<EbTransaction>, today: LocalDate = LocalDate.now()): List<NewTransaction> {
-        val seen = mutableMapOf<String, Int>()
+    fun map(
+        page: List<EbTransaction>,
+        today: LocalDate = LocalDate.now(),
+        seen: MutableMap<String, Int> = mutableMapOf(),
+    ): List<NewTransaction> {
         return page.filter { it.status == null || it.status == "BOOK" }.map { t ->
             val debit = t.creditDebitIndicator.equals("DBIT", ignoreCase = true)
             val amount = t.transactionAmount.amount.toBigDecimal().abs().let { if (debit) it.negate() else it }

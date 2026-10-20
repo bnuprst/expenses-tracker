@@ -22,6 +22,7 @@ import com.bnuprst.expenses.shared.BankConnectionDto
 import com.bnuprst.expenses.shared.CategoryDto
 import com.bnuprst.expenses.shared.CategorySource
 import com.bnuprst.expenses.shared.ConnectionStatus
+import com.bnuprst.expenses.shared.FinalizeImportResult
 import com.bnuprst.expenses.shared.ImportResult
 import com.bnuprst.expenses.shared.SyncResultDto
 import com.bnuprst.expenses.shared.TransactionDto
@@ -223,19 +224,24 @@ class IntegrationTest {
                {"externalId":"t1","date":"2025-01-03","amount":"-20.10","payee":"LIDL SP Z O O","category":"Food"},
                {"externalId":"t2","date":"2025-02-03","amount":"-11.00","payee":"Lidl","category":"Food"},
                {"externalId":"t3","date":"2025-02-05","amount":"-5.00","payee":"Lidl","category":"Groceries"},
-               {"externalId":"t4","date":"$recent","amount":"4000.00","payee":"ACME","category":"Paycheck"},
+               {"externalId":"t4","date":"$recent","amount":"4000.00","payee":"ACME","category":"Paycheck","account":"Main"},
+               {"externalId":"t6","date":"$recent","amount":"-7.00","payee":"Kiosk","category":"Food","account":"Main"},
+               {"externalId":"c1","date":"${recent.minusDays(20)}","amount":"-2.00","payee":"Market","category":"Food","account":"Cash"},
                {"externalId":"t5","date":"2025-03-01","amount":"-9.99","payee":"Mystery shop"}
              ]}
         """.trimIndent()
         val first: ImportResult = client.post("/api/v1/wallets/${wallet.id}/import") { bearerAuth(token); json(); setBody(body) }.body()
-        assertEquals(ImportResult(received = 5, inserted = 5, categoriesCreated = 2, merchantsLearned = 2), first)
+        assertEquals(ImportResult(received = 7, inserted = 7, categoriesCreated = 2, merchantsLearned = 0), first)
         val again: ImportResult = client.post("/api/v1/wallets/${wallet.id}/import") { bearerAuth(token); json(); setBody(body) }.body()
         assertEquals(0, again.inserted)
+        val finalized: FinalizeImportResult = client.post("/api/v1/wallets/${wallet.id}/import/finalize?source=actual") { bearerAuth(token) }.body()
+        assertEquals(4, finalized.merchantsLearned) // lidl, acme, kiosk, market; the uncategorized row teaches nothing
+
 
         val categories: List<CategoryDto> = client.get("/api/v1/wallets/${wallet.id}/categories") { bearerAuth(token) }.body()
         val food = categories.single { it.name == "Food" }
-        val txns: List<TransactionDto> = client.get("/api/v1/wallets/${wallet.id}/transactions") { bearerAuth(token) }.body()
-        assertEquals(TxnStatus.UNCATEGORIZED, txns.single { it.amount == "-9.99" }.status)
+        val review: List<TransactionDto> = client.get("/api/v1/wallets/${wallet.id}/review") { bearerAuth(token) }.body()
+        assertEquals(TxnStatus.UNCATEGORIZED, review.single { it.amount == "-9.99" }.status, "uncategorized rows belong in the review queue")
 
         // Majority vote: Lidl was Food twice, Groceries once.
         val next = client.addTxn(token, wallet.id, "LIDL 1234 WARSZAWA", "LIDL")
@@ -249,12 +255,80 @@ class IntegrationTest {
         val ben = client.post("/api/v1/auth/login") { json(); setBody(mapOf("email" to "ben@example.com", "password" to "password123")) }.body<AuthResponse>().token
         assertEquals(HttpStatusCode.Forbidden, client.post("/api/v1/wallets/${wallet.id}/import") { bearerAuth(ben); json(); setBody(body) }.status)
 
-        // The first bank pull starts the day after the imported history ends, not 90 days back.
+        // The first bank pull starts on the last imported day of the matching account ("Main", the bank
+        // account's name) - not 90 days back, not the day after, and not at "Cash", which ends earlier.
+        // That day's already-imported rows are not inserted twice; the rest of the day is.
+        bank.pages = listOf(
+            EbTransaction("B1", null, EbAmount("PLN", "7.00"), "DBIT", "BOOK", recent.toString(), creditor = EbParty("KIOSK 12")),
+            EbTransaction("B2", null, EbAmount("PLN", "3.20"), "DBIT", "BOOK", recent.toString(), creditor = EbParty("Bakery")),
+            EbTransaction("B3", null, EbAmount("PLN", "15.00"), "DBIT", "BOOK", recent.plusDays(1).toString(), creditor = EbParty("Pharmacy")),
+        )
         val auth: BankAuthResponse = client.post("/api/v1/wallets/${wallet.id}/bank-connections") {
             bearerAuth(token); json(); setBody(mapOf("aspspName" to "Nordea", "country" to "FI"))
         }.body()
         client.get("/api/v1/banking/callback?state=${bank.lastAuth!!.state}&code=abc")
         client.post("/api/v1/bank-connections/${auth.connectionId}/sync") { bearerAuth(token) }
-        assertEquals(recent.plusDays(1), bank.dateFroms.first())
+        assertEquals(recent, bank.dateFroms.first())
+        val all: List<TransactionDto> = client.get("/api/v1/wallets/${wallet.id}/transactions") { bearerAuth(token) }.body()
+        val bankRows = all.filter { it.bankAccountId != null }.map { it.amount }.toSet()
+        assertEquals(setOf("-3.20", "-15.00"), bankRows)
+        // The next sync's 7-day overlap re-fetches the boundary day: the imported row must still win.
+        client.post("/api/v1/bank-connections/${auth.connectionId}/sync") { bearerAuth(token) }
+        val again2: List<TransactionDto> = client.get("/api/v1/wallets/${wallet.id}/transactions") { bearerAuth(token) }.body()
+        assertEquals(listOf("-15.00", "-3.20"), again2.filter { it.bankAccountId != null }.map { it.amount }.sorted())
+    }
+
+    @Test
+    fun `merchant majority is decided over all batches, not the first one`() = app { client ->
+        val token = client.register("anna@example.com").token
+        val wallet = client.createWallet(token)
+        fun batch(vararg rows: Pair<String, String>) = """{"source":"actual","transactions":[""" +
+            rows.joinToString(",") { (id, cat) -> """{"externalId":"$id","date":"2025-01-01","amount":"-1.00","payee":"Lidl","category":"$cat"}""" } + "]}"
+        client.post("/api/v1/wallets/${wallet.id}/import") { bearerAuth(token); json(); setBody(batch("a" to "Restaurants & Cafes")) }
+        client.post("/api/v1/wallets/${wallet.id}/import") { bearerAuth(token); json(); setBody(batch("b" to "Groceries", "c" to "Groceries")) }
+        val r: FinalizeImportResult = client.post("/api/v1/wallets/${wallet.id}/import/finalize?source=actual") { bearerAuth(token) }.body()
+        assertEquals(1, r.merchantsLearned)
+        val categories: List<CategoryDto> = client.get("/api/v1/wallets/${wallet.id}/categories") { bearerAuth(token) }.body()
+        val next = client.addTxn(token, wallet.id, "LIDL 77", "LIDL")
+        assertEquals(categories.single { it.name == "Groceries" }.id, next.categoryId)
+    }
+
+    @Test
+    fun `the catch-all unknown merchant is never learned or spread`() = app { client ->
+        val token = client.register("anna@example.com").token
+        val wallet = client.createWallet(token)
+        val categories: List<CategoryDto> = client.get("/api/v1/wallets/${wallet.id}/categories") { bearerAuth(token) }.body()
+        llm.reply = """{"category_id": 0, "confidence": 0.1}"""
+        val a = client.addTxn(token, wallet.id, "123 456 *999", null)
+        val b = client.addTxn(token, wallet.id, "0000 1111", null)
+        assertEquals("unknown", a.merchantKey)
+        client.patch("/api/v1/transactions/${a.id}") { bearerAuth(token); json(); setBody(mapOf("categoryId" to categories.first { it.name == "Transfers" }.id)) }
+        val txns: List<TransactionDto> = client.get("/api/v1/wallets/${wallet.id}/transactions") { bearerAuth(token) }.body()
+        assertTrue(txns.single { it.id == b.id }.categorySource != CategorySource.MEMORY)
+        val c = client.addTxn(token, wallet.id, "999 888", null)
+        assertTrue(c.categorySource != CategorySource.MEMORY)
+    }
+
+    @Test
+    fun `bank rows left uncategorized by an llm outage are retried on the next sync`() = app { client ->
+        val token = client.register("anna@example.com").token
+        val wallet = client.createWallet(token)
+        val categories: List<CategoryDto> = client.get("/api/v1/wallets/${wallet.id}/categories") { bearerAuth(token) }.body()
+        llm.reply = """{"category_id": ${categories.first { it.name == "Groceries" }.id}, "confidence": 0.95}"""
+        llm.fail = true
+        bank.pages = listOf(EbTransaction("R1", null, EbAmount("EUR", "20.00"), "DBIT", "BOOK", LocalDate.now().toString(), creditor = EbParty("Lidl")))
+        val auth: BankAuthResponse = client.post("/api/v1/wallets/${wallet.id}/bank-connections") {
+            bearerAuth(token); json(); setBody(mapOf("aspspName" to "Nordea", "country" to "FI"))
+        }.body()
+        client.get("/api/v1/banking/callback?state=${bank.lastAuth!!.state}&code=abc")
+        client.post("/api/v1/bank-connections/${auth.connectionId}/sync") { bearerAuth(token) }
+        val before: List<TransactionDto> = client.get("/api/v1/wallets/${wallet.id}/review") { bearerAuth(token) }.body()
+        assertEquals(TxnStatus.UNCATEGORIZED, before.single().status)
+
+        llm.fail = false
+        client.post("/api/v1/bank-connections/${auth.connectionId}/sync") { bearerAuth(token) }
+        val after: List<TransactionDto> = client.get("/api/v1/wallets/${wallet.id}/transactions") { bearerAuth(token) }.body()
+        assertEquals(TxnStatus.CATEGORIZED, after.single().status)
+        assertEquals(CategorySource.LLM, after.single().categorySource)
     }
 }

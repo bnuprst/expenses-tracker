@@ -76,7 +76,7 @@ if (dryRun) {
 const base = env('EXPENSES_URL', 'http://expenses-tracker:8080').replace(/\/$/, '');
 const walletId = env('WALLET_ID');
 const { token } = await post(`${base}/api/v1/auth/login`, { email: env('EXPENSES_EMAIL'), password: env('EXPENSES_PASSWORD') });
-const total = { received: 0, inserted: 0, categoriesCreated: 0, merchantsLearned: 0 };
+const total = { received: 0, inserted: 0, categoriesCreated: 0 };
 let first = true;
 for (const chunk of batches(transactions, BATCH)) {
   // Categories ride on the first batch; later batches create any they still reference on the fly.
@@ -85,4 +85,6 @@ for (const chunk of batches(transactions, BATCH)) {
   for (const k of Object.keys(total)) total[k] += r[k];
   console.log(`  sent ${total.received}/${transactions.length}, inserted ${total.inserted}`);
 }
-console.log(`Done: ${JSON.stringify(total)}`);
+// Merchant memory is learned once, from the majority over all batches - not per batch.
+const finalized = await post(`${base}/api/v1/wallets/${walletId}/import/finalize?source=actual`, {}, token);
+console.log(`Done: ${JSON.stringify({ ...total, ...finalized })}`);

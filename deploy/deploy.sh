@@ -10,9 +10,12 @@ COMPOSE=(docker compose -f docker-compose.prod.yml)
 [[ -f docker-compose.edge.yml ]] && COMPOSE+=(-f docker-compose.edge.yml)
 
 [[ -f .env ]] || { echo "No .env - copy .env.example to .env and fill it in." >&2; exit 1; }
-if grep -Eq '^EB_APP_ID=.+' .env && [[ ! -s .secrets/enablebanking.pem ]]; then
-  echo "EB_APP_ID is set but .secrets/enablebanking.pem is missing or empty." >&2
-  exit 1
+# The image's `app` user gets this uid, so it can read files this user owns (the 0600 bank key).
+APP_UID="$(id -u)"
+export APP_UID
+if grep -Eq '^EB_APP_ID=.+' .env; then
+  [[ -s .secrets/enablebanking.pem ]] || { echo "EB_APP_ID is set but .secrets/enablebanking.pem is missing or empty." >&2; exit 1; }
+  [[ -r .secrets/enablebanking.pem ]] || { echo ".secrets/enablebanking.pem is not readable by $(id -un) - the app runs as this uid." >&2; exit 1; }
 fi
 # Compose refuses to start without the secret file, even with bank sync off.
 [[ -e .secrets/enablebanking.pem ]] || { install -d -m 700 .secrets; install -m 600 /dev/null .secrets/enablebanking.pem; }

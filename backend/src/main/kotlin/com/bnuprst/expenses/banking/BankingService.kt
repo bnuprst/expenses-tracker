@@ -15,6 +15,7 @@ import com.bnuprst.expenses.shared.BankAuthResponse
 import com.bnuprst.expenses.shared.BankConnectionDto
 import com.bnuprst.expenses.shared.ConnectionStatus
 import com.bnuprst.expenses.shared.SyncResultDto
+import com.bnuprst.expenses.transactions.ImportBoundary
 import com.bnuprst.expenses.transactions.TransactionService
 import com.bnuprst.expenses.wallets.WalletService
 import io.ktor.http.URLBuilder
@@ -233,20 +234,29 @@ class BankingService(
             val accounts = dbQuery { BankAccounts.selectAll().where { BankAccounts.connectionId eq connectionId }.toList() }
             val today = LocalDate.ofInstant(clock(), ZoneOffset.UTC)
             for (acc in accounts) {
-                val from = acc[BankAccounts.lastBookingDate]?.minusDays(7) // a week of overlap: banks book late, dedup makes it safe
-                    ?: firstSyncStart(walletId, today)
+                // Later syncs re-fetch a week of overlap (banks book late; dedup makes it safe). The first one
+                // starts where imported history for this account ends, if there is any.
+                val imported = importedHistoryEnd(walletId, acc)
+                val from = acc[BankAccounts.lastBookingDate]?.minusDays(7)
+                    ?: imported?.second?.takeIf { it >= today.minusDays(config.initialHistoryDays) }
+                    ?: today.minusDays(config.initialHistoryDays)
+                // Any window reaching back to that day must recognise its already-imported rows - not just the
+                // first sync, or the overlap of the next one would insert them after all.
+                val boundary = imported?.takeIf { (_, last) -> from <= last }?.let { (source, last) -> importBoundary(walletId, source, last) }
                 var key: String? = null
                 var maxDate = acc[BankAccounts.lastBookingDate]
+                val seenHashes = mutableMapOf<String, Int>()
                 do {
                     val page = api.transactions(acc[BankAccounts.externalUid], from, key)
-                    val mapped = TransactionMapper.map(page.transactions, today)
+                    val mapped = TransactionMapper.map(page.transactions, today, seenHashes)
                     fetched += mapped.size
-                    inserted += transactions.importBankTransactions(walletId, acc[BankAccounts.id], mapped)
+                    inserted += transactions.importBankTransactions(walletId, acc[BankAccounts.id], mapped, boundary)
                     mapped.maxOfOrNull { it.bookingDate }?.let { d -> if (maxDate == null || d > maxDate) maxDate = d }
                     key = page.continuationKey?.takeIf { it.isNotBlank() }
                 } while (key != null)
                 dbQuery { BankAccounts.update({ BankAccounts.id eq acc[BankAccounts.id] }) { it[lastBookingDate] = maxDate } }
             }
+            transactions.retryUncategorized(walletId)
         } catch (e: EnableBankingException) {
             error = e.message
             if (e.isConsentProblem) setStatus(connectionId, ConnectionStatus.EXPIRED)
@@ -266,18 +276,45 @@ class BankingService(
     }
 
     /**
-     * The first pull goes back EB_INITIAL_HISTORY_DAYS, but never into dates already covered by imported
-     * history (e.g. from Actual), which would otherwise appear twice under different ids.
+     * Where imported history (e.g. from Actual) ends for this bank account: the first pull starts on that day
+     * rather than EB_INITIAL_HISTORY_DAYS back, so nothing is fetched twice under different ids.
+     *
+     * Imported history is tracked per source account. The one matching this bank account (by name or the
+     * IBAN's last digits) decides; without a match, the source account whose history ends earliest does,
+     * so another account's later entries (a cash wallet, a card) can't push the start past real bank rows.
      */
-    private suspend fun firstSyncStart(walletId: Long, today: LocalDate): LocalDate {
-        val default = today.minusDays(config.initialHistoryDays)
+    private suspend fun importedHistoryEnd(walletId: Long, account: ResultRow): Pair<String?, LocalDate>? {
         val maxDate = Transactions.bookingDate.max()
-        val lastImported: LocalDate? = dbQuery {
-            Transactions.select(maxDate)
+        val importedUntil: List<Pair<String?, LocalDate>> = dbQuery {
+            Transactions.select(Transactions.sourceAccount, maxDate)
                 .where { (Transactions.walletId eq walletId) and Transactions.bankAccountId.isNull() and Transactions.externalId.isNotNull() }
-                .singleOrNull()?.get(maxDate)
+                .groupBy(Transactions.sourceAccount)
+                .mapNotNull { r -> r[maxDate]?.let { r[Transactions.sourceAccount] to it } }
         }
-        return if (lastImported != null && lastImported >= default) lastImported.plusDays(1) else default
+        if (importedUntil.isEmpty()) return null
+        return importedUntil.firstOrNull { (name, _) -> name != null && matchesAccount(name, account) }
+            ?: importedUntil.minBy { it.second }
+    }
+
+    /** The boundary day is fetched again in full; its rows that were already imported are recognised here. */
+    private suspend fun importBoundary(walletId: Long, source: String?, last: LocalDate): ImportBoundary {
+        val sameDay = dbQuery {
+            Transactions.select(Transactions.bookingDate, Transactions.amount)
+                .where {
+                    val c = (Transactions.walletId eq walletId) and Transactions.bankAccountId.isNull() and
+                        Transactions.externalId.isNotNull() and (Transactions.bookingDate eq last)
+                    if (source == null) c and Transactions.sourceAccount.isNull() else c and (Transactions.sourceAccount eq source)
+                }
+                .map { it[Transactions.bookingDate] to it[Transactions.amount] }
+        }
+        return ImportBoundary(last, sameDay)
+    }
+
+    private fun matchesAccount(sourceName: String, account: ResultRow): Boolean {
+        val name = account[BankAccounts.name]
+        if (name != null && sourceName.trim().equals(name.trim(), ignoreCase = true)) return true
+        val last4 = account[BankAccounts.ibanMasked]?.filter(Char::isDigit)?.takeLast(4)
+        return last4 != null && last4.length == 4 && sourceName.filter(Char::isDigit).endsWith(last4)
     }
 
     private suspend fun setStatus(connectionId: Long, status: ConnectionStatus) = dbQuery {

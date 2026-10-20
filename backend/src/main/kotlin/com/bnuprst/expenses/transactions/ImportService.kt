@@ -13,12 +13,19 @@ import com.bnuprst.expenses.db.Wallets
 import com.bnuprst.expenses.db.dbQuery
 import com.bnuprst.expenses.shared.CategoryKind
 import com.bnuprst.expenses.shared.CategorySource
+import com.bnuprst.expenses.shared.FinalizeImportResult
 import com.bnuprst.expenses.shared.ImportRequest
 import com.bnuprst.expenses.shared.ImportResult
 import com.bnuprst.expenses.shared.TxnStatus
 import com.bnuprst.expenses.shared.WalletRole
 import com.bnuprst.expenses.wallets.WalletService
+import org.jetbrains.exposed.sql.SqlExpressionBuilder.isNotNull
+import org.jetbrains.exposed.sql.SqlExpressionBuilder.isNull
+import org.jetbrains.exposed.sql.SqlExpressionBuilder.like
+import org.jetbrains.exposed.sql.and
+import org.jetbrains.exposed.sql.count
 import org.jetbrains.exposed.sql.insert
+import org.jetbrains.exposed.sql.update
 import org.jetbrains.exposed.sql.insertIgnore
 import org.jetbrains.exposed.sql.selectAll
 import java.time.LocalDate
@@ -55,7 +62,6 @@ class ImportService(private val wallets: WalletService) {
 
             val memory = MerchantMemory.selectAll().where { MerchantMemory.walletId eq walletId }
                 .associate { it[MerchantMemory.merchantKey] to it[MerchantMemory.categoryId] }
-            val votes = mutableMapOf<String, MutableMap<Long, Int>>()
             var inserted = 0
 
             for (t in req.transactions) {
@@ -70,7 +76,7 @@ class ImportService(private val wallets: WalletService) {
                 var catId = t.category?.takeIf { it.isNotBlank() }?.let { categoryId(it, kinds[it.trim().lowercase()] ?: CategoryKind.EXPENSE) }
                 var source: CategorySource? = catId?.let { CategorySource.MANUAL }
                 if (catId == null) {
-                    val remembered = memory[key]
+                    val remembered = memory[key]?.takeIf { Normalizer.isLearnable(key) }
                     val rule = if (remembered == null) RuleEngine.match(rules, TxnInput(description, counterparty, amount, currency, key)) else null
                     catId = remembered ?: rule?.categoryId
                     source = when {
@@ -78,8 +84,6 @@ class ImportService(private val wallets: WalletService) {
                         rule != null -> CategorySource.RULE
                         else -> null
                     }
-                } else {
-                    votes.getOrPut(key) { mutableMapOf() }.merge(catId!!, 1, Int::plus)
                 }
 
                 inserted += Transactions.insertIgnore {
@@ -96,17 +100,56 @@ class ImportService(private val wallets: WalletService) {
                     it[Transactions.categorySource] = source?.name
                     it[Transactions.confidence] = catId?.let { 1.0 }
                     it[Transactions.status] = (if (catId != null) TxnStatus.CATEGORIZED else TxnStatus.UNCATEGORIZED).name
+                    it[Transactions.sourceAccount] = t.account?.trim()?.takeIf { it.isNotEmpty() }
                 }.insertedCount
             }
 
-            // Majority vote per merchant; existing memory (the user's decisions here) always wins.
+            // Merchant memory is learned in finalize(), once every batch is in.
+            ImportResult(req.transactions.size, inserted, created, 0)
+        }
+    }
+
+    /**
+     * Run once after the last batch: learns merchant memory from the majority category per merchant over
+     * the whole import (a per-batch vote would let the first batch to see a merchant decide), then applies
+     * it to imported rows that arrived uncategorized. Existing memory - the user's own decisions here -
+     * always wins, and the catch-all key is never learned.
+     */
+    suspend fun finalize(userId: Long, walletId: Long, source: String): FinalizeImportResult {
+        if (wallets.requireRole(userId, walletId) != WalletRole.OWNER) throw Forbidden("Only wallet owners can import")
+        if (source.isBlank() || source.contains('%') || source.contains('_')) throw BadRequest("Invalid source")
+        return dbQuery {
+            val count = Transactions.id.count()
+            val votes = Transactions.select(Transactions.merchantKey, Transactions.categoryId, count)
+                .where {
+                    (Transactions.walletId eq walletId) and Transactions.bankAccountId.isNull() and
+                        (Transactions.externalId like "$source:%") and
+                        (Transactions.categorySource eq CategorySource.MANUAL.name) and Transactions.categoryId.isNotNull()
+                }
+                .groupBy(Transactions.merchantKey, Transactions.categoryId)
+                .map { Triple(it[Transactions.merchantKey], it[Transactions.categoryId]!!, it[count]) }
+            val existing = MerchantMemory.select(MerchantMemory.merchantKey)
+                .where { MerchantMemory.walletId eq walletId }.map { it[MerchantMemory.merchantKey] }.toSet()
+
             var learned = 0
-            for ((key, counts) in votes) {
-                if (key == "unknown" || key in memory) continue
-                DbCategorizationStore.learn(walletId, key, counts.maxBy { it.value }.key)
+            var recategorized = 0
+            // Ties go to the lower category id, so re-running finalize is deterministic.
+            for ((key, rows) in votes.groupBy { it.first }) {
+                if (!Normalizer.isLearnable(key) || key in existing) continue
+                val winner = rows.sortedWith(compareByDescending<Triple<String, Long, Long>> { it.third }.thenBy { it.second }).first().second
+                DbCategorizationStore.learn(walletId, key, winner)
                 learned++
+                recategorized += Transactions.update({
+                    (Transactions.walletId eq walletId) and (Transactions.merchantKey eq key) and
+                        (Transactions.status eq TxnStatus.UNCATEGORIZED.name)
+                }) {
+                    it[Transactions.categoryId] = winner
+                    it[categorySource] = CategorySource.MEMORY.name
+                    it[confidence] = 1.0
+                    it[status] = TxnStatus.CATEGORIZED.name
+                }
             }
-            ImportResult(req.transactions.size, inserted, created, learned)
+            FinalizeImportResult(learned, recategorized)
         }
     }
 

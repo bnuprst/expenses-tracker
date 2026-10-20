@@ -8,7 +8,10 @@ COPY backend backend
 RUN gradle :backend:installDist --no-daemon -q
 
 FROM eclipse-temurin:21-jre
-RUN useradd --system --uid 10001 app
+# deploy/deploy.sh passes the host service user's uid, so the container can read the 0600 Enable Banking
+# key: Compose secrets outside Swarm are bind mounts that keep the host file's owner and mode.
+ARG APP_UID=10001
+RUN useradd --system --no-create-home --uid "${APP_UID}" app
 WORKDIR /app
 COPY --from=build /src/backend/build/install/backend /app
 USER app

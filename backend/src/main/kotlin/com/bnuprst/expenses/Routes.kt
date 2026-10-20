@@ -103,9 +103,12 @@ private fun Route.walletRoutes(s: Services) = route("/wallets") {
             val req = call.receive<ImportRequest>()
             call.respond(s.imports.import(call.userId(), call.longParam("walletId"), req))
         }
-        get("/review") {
-            call.respond(s.transactions.list(call.userId(), call.longParam("walletId"), null, null, TxnStatus.REVIEW, null))
+        post("/import/finalize") {
+            val source = call.request.queryParameters["source"] ?: throw BadRequest("source is required")
+            call.respond(s.imports.finalize(call.userId(), call.longParam("walletId"), source))
         }
+        // Everything that still needs a human: low-confidence suggestions and rows nothing could categorize.
+        get("/review") { call.respond(s.transactions.reviewQueue(call.userId(), call.longParam("walletId"))) }
         post("/bank-connections") {
             val banking = s.banking ?: throw NotFound("Bank sync is not configured")
             val req = call.receive<CreateBankConnectionRequest>()

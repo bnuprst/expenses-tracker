@@ -16,6 +16,8 @@ services:
     build:
       context: .
       dockerfile: backend/Dockerfile
+      args:
+        APP_UID: ${APP_UID:-10001}
     image: expenses-tracker-app:local
     restart: unless-stopped
     depends_on:

@@ -55,6 +55,11 @@ fun buildServices(config: AppConfig, llmProvider: LlmProvider? = null, bankingAp
     val provider = llmProvider ?: if (config.llm.enabled) {
         OpenAiCompatibleProvider(HttpClient(CIO) { install(HttpTimeout) }, config.llm)
     } else null
+    if (provider == null) {
+        LoggerFactory.getLogger("Application").warn(
+            "LLM categorization is off (LLM_ENABLED=false, or no LLM_API_KEY for a hosted API): unknown merchants go to review"
+        )
+    }
     val categorizer = Categorizer(DbCategorizationStore(), provider?.let(::LlmCategorizer), config.llm.confidenceThreshold)
     val transactions = TransactionService(wallets, categorizer)
     val banking = config.enableBanking?.let { eb ->
