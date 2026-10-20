@@ -1,0 +1,14 @@
+{
+  "name": "actual-import",
+  "private": true,
+  "description": "One-off import of Actual Budget history into expenses-tracker",
+  "type": "module",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "start": "node import.mjs",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "@actual-app/api": "26.10.0"
+  }
+}

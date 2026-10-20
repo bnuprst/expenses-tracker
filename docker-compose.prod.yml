@@ -1,0 +1,62 @@
+# Production stack. On the netcup VPS it runs behind the shared edge Caddy (bnuprst/vps-infra): there
+# `bin/attach-app expenses-tracker` installs docker-compose.edge.yml next to this file, which joins `app`
+# to the `edge` network under the alias `expenses-tracker`. deploy/deploy.sh adds it as a second -f.
+#
+# Nothing here publishes a port: Docker's iptables rules bypass ufw, so only edge may publish.
+name: expenses-tracker
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+      args:
+        APP_UID: ${APP_UID:-10001}
+    image: expenses-tracker-app:local
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      DB_URL: jdbc:postgresql://db:5432/expenses
+      DB_USER: expenses
+      EB_PRIVATE_KEY_PATH: /run/secrets/enablebanking_key
+      # The heap follows the container limit instead of the host's RAM.
+      JAVA_OPTS: -XX:MaxRAMPercentage=70
+    secrets:
+      - enablebanking_key
+    mem_limit: 512m
+    logging: *default-logging
+
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: expenses
+      POSTGRES_USER: expenses
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?set DB_PASSWORD in .env}
+      TZ: ${TZ:-Europe/Warsaw}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U expenses -d expenses"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    mem_limit: 256m
+    logging: *default-logging
+
+secrets:
+  enablebanking_key:
+    # Docker requires the file to exist even when bank sync is off; deploy.sh checks it.
+    file: ./.secrets/enablebanking.pem
+
+volumes:
+  pgdata:

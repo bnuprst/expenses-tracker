@@ -1,0 +1,10 @@
+[Unit]
+Description=expenses-tracker nightly database backup
+After=docker.service
+
+[Service]
+Type=oneshot
+# The service user on this box - the one bootstrap.sh was run with (bookkeebara on the current box).
+User=bookkeebara
+WorkingDirectory=/opt/expenses-tracker
+ExecStart=/opt/expenses-tracker/deploy/backup.sh

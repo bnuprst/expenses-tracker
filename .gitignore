@@ -1,0 +1,14 @@
+.gradle/
+build/
+.kotlin/
+.idea/
+*.iml
+local.properties
+.env
+*.pem
+*.key
+android/app/release/
+.secrets/
+# Installed by vps-infra's bin/attach-app, not committed here.
+docker-compose.edge.yml
+node_modules/
