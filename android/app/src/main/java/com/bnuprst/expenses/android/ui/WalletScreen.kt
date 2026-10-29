@@ -51,6 +51,8 @@ private val WalletTab.icon get() = when (this) {
 fun WalletScreen(state: UiState, vm: AppViewModel) {
     val wallet = state.wallet ?: return
     BackHandler { if (state.tab != WalletTab.TRANSACTIONS) vm.selectTab(WalletTab.TRANSACTIONS) else vm.openWallet(null) }
+    // Tapping a transaction opens its details; the category picker opens from there.
+    var details by remember { mutableStateOf<TransactionDto?>(null) }
     var picking by remember { mutableStateOf<TransactionDto?>(null) }
     Scaffold(
         topBar = {
@@ -90,12 +92,20 @@ fun WalletScreen(state: UiState, vm: AppViewModel) {
     ) { padding ->
         PullToRefreshBox(isRefreshing = state.refreshing, onRefresh = vm::pullRefresh, modifier = Modifier.padding(padding).fillMaxSize()) {
             when (state.tab) {
-                WalletTab.TRANSACTIONS -> TransactionsScreen(state, vm) { picking = it }
-                WalletTab.REVIEW -> ReviewScreen(state) { picking = it }
+                WalletTab.TRANSACTIONS -> TransactionsScreen(state, vm) { details = it }
+                WalletTab.REVIEW -> ReviewScreen(state) { details = it }
                 WalletTab.STATS -> StatsScreen(state, vm)
                 WalletTab.BANKS -> BanksScreen(state, vm)
             }
         }
+    }
+    details?.let { txn ->
+        TransactionDetailsSheet(
+            txn, state.categories,
+            onDismiss = { details = null },
+            onConfirm = { categoryId -> vm.setCategory(txn, categoryId); details = null },
+            onChangeCategory = { details = null; picking = txn },
+        )
     }
     picking?.let { txn ->
         CategoryPickerSheet(

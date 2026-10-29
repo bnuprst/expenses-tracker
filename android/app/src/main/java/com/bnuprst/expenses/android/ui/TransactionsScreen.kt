@@ -319,7 +319,8 @@ private fun DayHeader(date: LocalDate) {
 @Composable
 private fun TransactionRow(t: TransactionDto, categories: Map<Long, CategoryDto>, showDate: Boolean, onClick: (TransactionDto) -> Unit) {
     val category = t.categoryId?.let { categories[it] }
-    val title = t.counterparty ?: t.description
+    // Money in names the payer ("From ACME Oy"); money out keeps just the payee, as most rows are purchases.
+    val title = (if (t.isIncoming()) t.partyLabel() else t.counterparty) ?: t.description
     val amount = t.amount.toBigDecimalOrNull()
     val amountColors = LocalAmountColors.current
     ListItem(

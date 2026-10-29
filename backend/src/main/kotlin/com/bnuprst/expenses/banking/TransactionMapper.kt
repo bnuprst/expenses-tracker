@@ -36,9 +36,18 @@ object TransactionMapper {
                     val n = seen.merge(base, 1, Int::plus)!!
                     "h:$base:$n"
                 }
-            NewTransaction(externalId, date, amount, t.transactionAmount.currency, description.trim(), counterparty)
+            NewTransaction(
+                externalId, date, amount, t.transactionAmount.currency, description.trim(), counterparty,
+                transactionDate = parseDate(t.transactionDate),
+                valueDate = parseDate(t.valueDate),
+                counterpartyIban = (if (debit) t.creditorAccount else t.debtorAccount)?.iban?.filterNot { it.isWhitespace() }?.takeIf { it.isNotEmpty() },
+                paymentType = t.bankTransactionCode?.description?.trim()?.takeIf { it.isNotEmpty() },
+            )
         }
     }
+
+    /** Detail dates are informational, so one a bank sends in an odd format is dropped rather than failing the sync. */
+    private fun parseDate(s: String?): LocalDate? = s?.take(10)?.let { runCatching { LocalDate.parse(it) }.getOrNull() }
 
     private fun sha256(s: String): String =
         MessageDigest.getInstance("SHA-256").digest(s.toByteArray()).take(16).joinToString("") { "%02x".format(it) }

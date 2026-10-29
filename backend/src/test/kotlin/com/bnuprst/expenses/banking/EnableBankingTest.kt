@@ -57,10 +57,15 @@ class EnableBankingTest {
         assertEquals(BigDecimal("-23.45"), grocery.amount)
         assertEquals("K-Market Kamppi", grocery.counterparty)
         assertEquals("K-MARKET KAMPPI 12.10", grocery.description)
+        assertEquals(LocalDate.parse("2026-10-11"), grocery.transactionDate)
+        assertEquals(LocalDate.parse("2026-10-12"), grocery.valueDate)
+        assertEquals("Card payment", grocery.paymentType)
 
         val salary = mapped[1]
         assertEquals(BigDecimal("3200.00"), salary.amount)
         assertEquals("ACME Oy", salary.counterparty)
+        assertEquals("FI2112345600000785", salary.counterpartyIban, "the payer's account for money in, without spaces")
+        assertEquals(null, salary.paymentType)
 
         // Two identical purchases without references both survive, with stable distinct ids.
         assertTrue(mapped[2].externalId!!.startsWith("h:"))
