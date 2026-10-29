@@ -19,7 +19,9 @@ import com.bnuprst.expenses.shared.WalletDto
 import io.ktor.client.HttpClient
 import io.ktor.client.call.body
 import io.ktor.client.engine.okhttp.OkHttp
+import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
+import io.ktor.client.plugins.timeout
 import io.ktor.client.request.HttpRequestBuilder
 import io.ktor.client.request.bearerAuth
 import io.ktor.client.request.get
@@ -42,6 +44,7 @@ class Api(private val baseUrl: () -> String, private val token: () -> String?) {
     private val http = HttpClient(OkHttp) {
         expectSuccess = false
         install(ContentNegotiation) { json(json) }
+        install(HttpTimeout)
     }
 
     private fun url(path: String) = baseUrl().trimEnd('/') + "/api/v1" + path
@@ -100,8 +103,14 @@ class Api(private val baseUrl: () -> String, private val token: () -> String?) {
         http.get(url("/bank-connections")) { authed(); parameter("wallet", walletId) }.ok()
 
     suspend fun sync(connectionId: Long): SyncResultDto =
-        http.post(url("/bank-connections/$connectionId/sync")) { authed() }.ok()
+        http.post(url("/bank-connections/$connectionId/sync")) {
+            authed()
+            // The server answers only after fetching from the bank and categorizing every new transaction.
+            timeout { requestTimeoutMillis = SYNC_TIMEOUT_MS; socketTimeoutMillis = SYNC_TIMEOUT_MS }
+        }.ok()
 
     suspend fun reauthorize(connectionId: Long): BankAuthResponse =
         http.post(url("/bank-connections/$connectionId/reauthorize")) { authed() }.ok()
 }
+
+private const val SYNC_TIMEOUT_MS = 5 * 60_000L

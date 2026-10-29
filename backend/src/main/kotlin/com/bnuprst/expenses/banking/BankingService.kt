@@ -20,11 +20,12 @@ import com.bnuprst.expenses.transactions.TransactionService
 import com.bnuprst.expenses.wallets.WalletService
 import io.ktor.http.URLBuilder
 import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import org.jetbrains.exposed.sql.JoinType
 import org.jetbrains.exposed.sql.ResultRow
 import org.jetbrains.exposed.sql.SortOrder
+import org.jetbrains.exposed.sql.SqlExpressionBuilder.eq
 import org.jetbrains.exposed.sql.and
+import org.jetbrains.exposed.sql.deleteWhere
 import org.jetbrains.exposed.sql.insert
 import org.jetbrains.exposed.sql.max
 import org.jetbrains.exposed.sql.selectAll
@@ -67,7 +68,14 @@ class BankingService(
                 it[status] = ConnectionStatus.PENDING.name
             }[BankConnections.id]
         }
-        return BankAuthResponse(id, startAuth(id, aspspName, country.uppercase()))
+        val url = try {
+            startAuth(id, aspspName, country.uppercase())
+        } catch (e: Exception) {
+            // Don't leave a dead PENDING connection behind for a bank that was never authorised.
+            dbQuery { BankConnections.deleteWhere { BankConnections.id eq id } }
+            throw e
+        }
+        return BankAuthResponse(id, url)
     }
 
     /** Renews consent for an existing connection; accounts and transaction history are kept. */
@@ -209,7 +217,18 @@ class BankingService(
         }
     }
 
-    suspend fun sync(connectionId: Long): SyncResultDto = locks.computeIfAbsent(connectionId) { Mutex() }.withLock {
+    /** Returns at once if this connection is already syncing (e.g. the initial sync after authorisation). */
+    suspend fun sync(connectionId: Long): SyncResultDto {
+        val lock = locks.computeIfAbsent(connectionId) { Mutex() }
+        if (!lock.tryLock()) return SyncResultDto(0, 0, "A sync is already running for this connection")
+        try {
+            return syncLocked(connectionId)
+        } finally {
+            lock.unlock()
+        }
+    }
+
+    private suspend fun syncLocked(connectionId: Long): SyncResultDto {
         val conn = dbQuery { BankConnections.selectAll().where { BankConnections.id eq connectionId }.single() }
         val walletId = conn[BankConnections.walletId]
         if (conn[BankConnections.status] != ConnectionStatus.ACTIVE.name) {
@@ -272,7 +291,7 @@ class BankingService(
                 it[SyncRuns.error] = error
             }
         }
-        SyncResultDto(fetched, inserted, error)
+        return SyncResultDto(fetched, inserted, error)
     }
 
     /**
