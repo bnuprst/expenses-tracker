@@ -96,6 +96,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     private val searchInput = MutableStateFlow("")
     private var txnJob: Job? = null
+    private var txnGeneration = 0
 
     init {
         if (_state.value.loggedIn) loadWallets()
@@ -138,7 +139,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun logout() {
         prefs.edit().remove("token").apply()
-        txnJob?.cancel()
+        cancelTxnLoads()
         _state.update { UiState(serverUrl = it.serverUrl) }
     }
 
@@ -155,7 +156,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun openWallet(wallet: WalletDto?) {
-        txnJob?.cancel()
+        cancelTxnLoads()
         _state.update {
             it.copy(
                 wallet = wallet, tab = WalletTab.TRANSACTIONS, transactions = emptyList(), filter = TxnFilter(), hasMore = false,
@@ -183,15 +184,20 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             val categories = api.categories(wallet.id)
             // Always loaded: the Review destination shows its size as a badge.
             val review = api.review(wallet.id)
-            _state.update { it.copy(categories = categories, review = review) }
+            updateWallet(wallet.id) { it.copy(categories = categories, review = review) }
+            if (_state.value.wallet?.id != wallet.id) return@launchTask
             when (_state.value.tab) {
-                WalletTab.TRANSACTIONS -> fetchTransactions(wallet.id, append = false)
+                WalletTab.TRANSACTIONS -> launchTxnLoad { gen -> fetchTransactions(wallet.id, append = false, gen) }.join()
                 WalletTab.REVIEW -> Unit
                 WalletTab.STATS -> fetchStats(wallet.id)
-                WalletTab.BANKS -> api.connections(wallet.id).let { c -> _state.update { it.copy(connections = c) } }
+                WalletTab.BANKS -> api.connections(wallet.id).let { c -> updateWallet(wallet.id) { it.copy(connections = c) } }
             }
         }
     }
+
+    /** Applies [block] only while [walletId] is still open, so a slow response can't land in another wallet. */
+    private fun updateWallet(walletId: Long, block: (UiState) -> UiState) =
+        _state.update { if (it.wallet?.id == walletId) block(it) else it }
 
     // --- transactions: search, filters, paging ---
 
@@ -206,10 +212,25 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         reloadTransactions()
     }
 
+    /**
+     * Every load of the transaction list (reload, refresh, next page, refetch) runs through here: it cancels
+     * the previous one and gets a new generation, and results from an older generation are dropped. So a
+     * page fetched for an offset of a list that has since been replaced can never be appended to it.
+     */
+    private fun launchTxnLoad(block: suspend (generation: Int) -> Unit): Job {
+        cancelTxnLoads()
+        val generation = txnGeneration
+        return launchTask { block(generation) }.also { txnJob = it }
+    }
+
+    private fun cancelTxnLoads() {
+        txnJob?.cancel()
+        txnGeneration++
+    }
+
     private fun reloadTransactions() {
         val wallet = _state.value.wallet ?: return
-        txnJob?.cancel()
-        txnJob = launchTask { fetchTransactions(wallet.id, append = false) }
+        launchTxnLoad { gen -> fetchTransactions(wallet.id, append = false, gen) }
     }
 
     fun loadMore() {
@@ -217,17 +238,18 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val wallet = s.wallet ?: return
         if (!s.hasMore || txnJob?.isActive == true) return
         _state.update { it.copy(loadingMore = true) }
-        txnJob = launchTask { fetchTransactions(wallet.id, append = true) }.also { job ->
-            job.invokeOnCompletion { _state.update { it.copy(loadingMore = false) } }
+        launchTxnLoad { gen -> fetchTransactions(wallet.id, append = true, gen) }.invokeOnCompletion {
+            _state.update { it.copy(loadingMore = false) }
         }
     }
 
-    private suspend fun fetchTransactions(walletId: Long, append: Boolean) {
+    private suspend fun fetchTransactions(walletId: Long, append: Boolean, generation: Int) {
         val filter = _state.value.filter
         val offset = if (append) _state.value.transactions.size else 0
         val page = api.transactions(walletId, filter, offset, PAGE_SIZE)
         _state.update { s ->
-            if (s.filter != filter) return@update s // a newer filter has taken over
+            // Superseded by a newer load or filter, or (for a page) the list it continues has changed length.
+            if (generation != txnGeneration || s.filter != filter || (append && s.transactions.size != offset)) return@update s
             s.copy(
                 transactions = if (append) (s.transactions + page).distinctBy { it.id } else page,
                 hasMore = page.size == PAGE_SIZE,
@@ -239,7 +261,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
      * Reloads as many rows as are already shown, in pages the server will serve in full (it caps a page at
      * [SERVER_MAX_PAGE]), so the list keeps its length and paging carries on where it was.
      */
-    private suspend fun refetchLoaded(walletId: Long) {
+    private suspend fun refetchLoaded(walletId: Long, generation: Int) {
         val filter = _state.value.filter
         val wanted = maxOf(PAGE_SIZE, _state.value.transactions.size)
         val rows = mutableListOf<TransactionDto>()
@@ -250,19 +272,21 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             rows += page
             hasMore = page.size == limit
         }
-        _state.update { s -> if (s.filter != filter) s else s.copy(transactions = rows.distinctBy { it.id }, hasMore = hasMore) }
+        _state.update { s ->
+            if (generation != txnGeneration || s.filter != filter) s else s.copy(transactions = rows.distinctBy { it.id }, hasMore = hasMore)
+        }
     }
 
     fun setCategory(txn: TransactionDto, categoryId: Long) = launchTask {
         api.setCategory(txn.id, categoryId)
         // The server applies the decision to other pending transactions of the same merchant too,
         // so reload everything currently shown.
-        _state.value.wallet?.let { w ->
-            val review = api.review(w.id)
-            _state.update { it.copy(review = review) }
-            if (_state.value.transactions.isNotEmpty()) refetchLoaded(w.id)
-            if (_state.value.stats != null) fetchStats(w.id)
-        }
+        val w = _state.value.wallet?.takeIf { it.id == txn.walletId } ?: return@launchTask
+        val review = api.review(w.id)
+        updateWallet(w.id) { it.copy(review = review) }
+        if (_state.value.wallet?.id != w.id) return@launchTask
+        if (_state.value.transactions.isNotEmpty()) launchTxnLoad { gen -> refetchLoaded(w.id, gen) }.join()
+        if (_state.value.stats != null) fetchStats(w.id)
     }
 
     // --- statistics ---
@@ -277,7 +301,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private suspend fun fetchStats(walletId: Long) {
         val period = _state.value.statsPeriod
         val stats = api.stats(walletId, period.from, period.to)
-        _state.update { if (it.statsPeriod == period) it.copy(stats = stats) else it }
+        updateWallet(walletId) { if (it.statsPeriod == period) it.copy(stats = stats) else it }
     }
 
     /** Drill-down from a statistics row: that category's transactions over the same period. */
@@ -319,7 +343,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun sync(connection: BankConnectionDto) = launchTask {
         val r = api.sync(connection.id)
         _state.update { it.copy(message = r.error ?: "Fetched ${r.fetched}, new ${r.inserted}") }
-        _state.value.wallet?.let { w -> api.connections(w.id).let { c -> _state.update { it.copy(connections = c) } } }
+        _state.value.wallet?.let { w -> api.connections(w.id).let { c -> updateWallet(w.id) { it.copy(connections = c) } } }
     }
 
     fun removeConnection(connection: BankConnectionDto) = launchTask {
