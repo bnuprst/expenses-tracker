@@ -4,6 +4,7 @@ import com.bnuprst.expenses.auth.AuthService
 import com.bnuprst.expenses.auth.JwtService
 import com.bnuprst.expenses.banking.BankingService
 import com.bnuprst.expenses.banking.EnableBankingClient
+import com.bnuprst.expenses.banking.EnableBankingException
 import com.bnuprst.expenses.categorization.Categorizer
 import com.bnuprst.expenses.categorization.DbCategorizationStore
 import com.bnuprst.expenses.categorization.llm.LlmCategorizer
@@ -91,6 +92,10 @@ fun Application.module(services: Services) {
     install(StatusPages) {
         exception<ApiException> { call, e -> call.respond(HttpStatusCode.fromValue(e.status), ErrorResponse(e.message ?: "Error")) }
         exception<BadRequestException> { call, e -> call.respond(HttpStatusCode.BadRequest, ErrorResponse(e.message ?: "Bad request")) }
+        exception<EnableBankingException> { call, e ->
+            log.error("Enable Banking request failed", e)
+            call.respond(HttpStatusCode.BadGateway, ErrorResponse("Bank provider error: ${e.apiMessage}"))
+        }
         exception<Throwable> { call, e ->
             log.error("Unhandled error", e)
             call.respond(HttpStatusCode.InternalServerError, ErrorResponse("Internal server error"))

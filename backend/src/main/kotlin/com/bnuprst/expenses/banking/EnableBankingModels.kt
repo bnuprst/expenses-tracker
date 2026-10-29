@@ -2,7 +2,11 @@ package com.bnuprst.expenses.banking
 
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 
 // Subset of the Enable Banking API (https://enablebanking.com/docs/api/reference/). Unknown fields are ignored.
 
@@ -99,6 +103,11 @@ class EnableBankingException(val status: Int, val body: String) : RuntimeExcepti
     val isConsentProblem: Boolean
         get() = status == 401 || status == 403 ||
             (status in 400..499 && SESSION_ERRORS.any { body.contains(it, ignoreCase = true) })
+
+    /** Enable Banking's own error message (e.g. "Redirect URI not allowed"), safe to show to the user. */
+    val apiMessage: String
+        get() = runCatching { Json.parseToJsonElement(body).jsonObject["message"]?.jsonPrimitive?.contentOrNull }.getOrNull()
+            ?: "HTTP $status"
 
     companion object {
         private val SESSION_ERRORS = listOf("EXPIRED_SESSION", "CLOSED_SESSION", "REVOKED_SESSION", "SESSION_DOES_NOT_EXIST")
