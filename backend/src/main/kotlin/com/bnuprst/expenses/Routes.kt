@@ -9,6 +9,7 @@ import com.bnuprst.expenses.shared.CreateWalletRequest
 import com.bnuprst.expenses.shared.ImportRequest
 import com.bnuprst.expenses.shared.LoginRequest
 import com.bnuprst.expenses.shared.RegisterRequest
+import com.bnuprst.expenses.shared.TxnSort
 import com.bnuprst.expenses.shared.TxnStatus
 import com.bnuprst.expenses.shared.UpdateTransactionRequest
 import io.ktor.http.HttpHeaders
@@ -36,6 +37,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import org.slf4j.LoggerFactory
 import java.time.LocalDate
+import java.time.YearMonth
 
 private val backgroundScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 private val log = LoggerFactory.getLogger("Routes")
@@ -94,9 +96,24 @@ private fun Route.walletRoutes(s: Services) = route("/wallets") {
                     from = q["from"]?.let(::parseDate),
                     to = q["to"]?.let(::parseDate),
                     status = q["status"]?.let { runCatching { TxnStatus.valueOf(it.uppercase()) }.getOrNull() ?: throw BadRequest("Invalid status") },
-                    categoryId = q["category"]?.toLongOrNull(),
+                    categoryId = q["category"]?.takeIf { it != "none" }?.let { it.toLongOrNull() ?: throw BadRequest("Invalid category") },
+                    query = q["q"],
+                    uncategorized = q["category"] == "none",
+                    sort = q["sort"]?.let { runCatching { TxnSort.valueOf(it.uppercase()) }.getOrNull() ?: throw BadRequest("Invalid sort") }
+                        ?: TxnSort.DATE_DESC,
                     limit = q["limit"]?.toIntOrNull() ?: 200,
                     offset = q["offset"]?.toLongOrNull() ?: 0,
+                )
+            )
+        }
+        get("/stats") {
+            val q = call.request.queryParameters
+            val month = YearMonth.now()
+            call.respond(
+                s.transactions.stats(
+                    call.userId(), call.longParam("walletId"),
+                    from = q["from"]?.let(::parseDate) ?: month.atDay(1),
+                    to = q["to"]?.let(::parseDate) ?: month.atEndOfMonth(),
                 )
             )
         }

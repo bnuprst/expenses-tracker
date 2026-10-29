@@ -12,6 +12,7 @@ import com.bnuprst.expenses.shared.ErrorResponse
 import com.bnuprst.expenses.shared.LoginRequest
 import com.bnuprst.expenses.shared.MemberDto
 import com.bnuprst.expenses.shared.RegisterRequest
+import com.bnuprst.expenses.shared.StatsDto
 import com.bnuprst.expenses.shared.SyncResultDto
 import com.bnuprst.expenses.shared.TransactionDto
 import com.bnuprst.expenses.shared.UpdateTransactionRequest
@@ -37,6 +38,7 @@ import io.ktor.http.contentType
 import io.ktor.http.isSuccess
 import io.ktor.serialization.kotlinx.json.json
 import kotlinx.serialization.json.Json
+import java.time.LocalDate
 
 class ApiException(message: String) : Exception(message)
 
@@ -85,8 +87,22 @@ class Api(private val baseUrl: () -> String, private val token: () -> String?) {
     suspend fun categories(walletId: Long): List<CategoryDto> =
         http.get(url("/wallets/$walletId/categories")) { authed() }.ok()
 
-    suspend fun transactions(walletId: Long): List<TransactionDto> =
-        http.get(url("/wallets/$walletId/transactions")) { authed(); parameter("limit", 300) }.ok()
+    suspend fun transactions(walletId: Long, filter: TxnFilter, offset: Int, limit: Int): List<TransactionDto> =
+        http.get(url("/wallets/$walletId/transactions")) {
+            authed()
+            parameter("limit", limit)
+            parameter("offset", offset)
+            parameter("sort", filter.sort.name)
+            filter.query.trim().takeIf { it.isNotEmpty() }?.let { parameter("q", it) }
+            when {
+                filter.uncategorized -> parameter("category", "none")
+                filter.categoryId != null -> parameter("category", filter.categoryId)
+            }
+            filter.period?.let { parameter("from", it.from.toString()); parameter("to", it.to.toString()) }
+        }.ok()
+
+    suspend fun stats(walletId: Long, from: LocalDate, to: LocalDate): StatsDto =
+        http.get(url("/wallets/$walletId/stats")) { authed(); parameter("from", from.toString()); parameter("to", to.toString()) }.ok()
 
     suspend fun review(walletId: Long): List<TransactionDto> =
         http.get(url("/wallets/$walletId/review")) { authed() }.ok()

@@ -24,8 +24,10 @@ import com.bnuprst.expenses.shared.BankConnectionDto
 import com.bnuprst.expenses.shared.CategoryDto
 import com.bnuprst.expenses.shared.CategorySource
 import com.bnuprst.expenses.shared.ConnectionStatus
+import com.bnuprst.expenses.shared.CreateTransactionRequest
 import com.bnuprst.expenses.shared.FinalizeImportResult
 import com.bnuprst.expenses.shared.ImportResult
+import com.bnuprst.expenses.shared.StatsDto
 import com.bnuprst.expenses.shared.SyncResultDto
 import com.bnuprst.expenses.shared.TransactionDto
 import com.bnuprst.expenses.shared.TxnStatus
@@ -404,5 +406,80 @@ class IntegrationTest {
         val after: List<TransactionDto> = client.get("/api/v1/wallets/${wallet.id}/transactions") { bearerAuth(token) }.body()
         assertEquals(TxnStatus.CATEGORIZED, after.single().status)
         assertEquals(CategorySource.LLM, after.single().categorySource)
+    }
+
+    private suspend fun HttpClient.txn(
+        token: String, walletId: Long, date: String, amount: String, merchant: String,
+        categoryId: Long? = null, currency: String? = null,
+    ): TransactionDto =
+        post("/api/v1/wallets/$walletId/transactions") {
+            bearerAuth(token); json()
+            setBody(CreateTransactionRequest(date, amount, currency, "$merchant CARD PAYMENT", merchant, categoryId))
+        }.also { assertEquals(HttpStatusCode.Created, it.status) }.body()
+
+    private fun assertAmount(expected: String, actual: String) =
+        assertEquals(0, expected.toBigDecimal().compareTo(actual.toBigDecimal()), "expected $expected, got $actual")
+
+    @Test
+    fun `transactions can be searched, filtered to uncategorized and sorted`() = app { client ->
+        val token = client.register("anna@example.com").token
+        val wallet = client.createWallet(token)
+        val categories: List<CategoryDto> = client.get("/api/v1/wallets/${wallet.id}/categories") { bearerAuth(token) }.body()
+        llm.fail = true
+        val coffee = client.txn(token, wallet.id, "2026-10-01", "-3.00", "Cafe 100% Arabica", categories.first { it.name == "Restaurants & Cafes" }.id)
+        val market = client.txn(token, wallet.id, "2026-10-05", "-50.00", "K-Market Kamppi", categories.first { it.name == "Groceries" }.id)
+        val salary = client.txn(token, wallet.id, "2026-10-25", "2000.00", "ACME Oy")
+        suspend fun ids(params: String): List<Long> =
+            client.get("/api/v1/wallets/${wallet.id}/transactions?$params") { bearerAuth(token) }.body<List<TransactionDto>>().map { it.id }
+
+        assertEquals(listOf(market.id), ids("q=k-market"), "counterparty, case-insensitive")
+        assertEquals(listOf(coffee.id), ids("q=card+payment&sort=DATE_ASC&limit=1"), "description")
+        assertEquals(listOf(coffee.id), ids("q=%25"), "a % in the query is literal")
+        assertEquals(emptyList(), ids("q=_"))
+        assertEquals(listOf(salary.id), ids("category=none"))
+        assertEquals(listOf(salary.id, market.id, coffee.id), ids("sort=DATE_DESC"))
+        assertEquals(listOf(coffee.id, market.id, salary.id), ids("sort=date_asc"))
+        assertEquals(listOf(market.id, coffee.id, salary.id), ids("sort=AMOUNT_ASC"))
+        assertEquals(listOf(salary.id, coffee.id, market.id), ids("sort=AMOUNT_DESC"))
+        assertEquals(HttpStatusCode.BadRequest, client.get("/api/v1/wallets/${wallet.id}/transactions?sort=size") { bearerAuth(token) }.status)
+    }
+
+    @Test
+    fun `stats total each category and leave transfers and other currencies out`() = app { client ->
+        val token = client.register("anna@example.com").token
+        val wallet = client.createWallet(token)
+        val categories: List<CategoryDto> = client.get("/api/v1/wallets/${wallet.id}/categories") { bearerAuth(token) }.body()
+        fun cat(name: String) = categories.first { it.name == name }.id
+        llm.fail = true
+        client.txn(token, wallet.id, "2026-10-03", "-40.00", "Lidl", cat("Groceries"))
+        client.txn(token, wallet.id, "2026-10-04", "-60.00", "Prisma", cat("Groceries"))
+        client.txn(token, wallet.id, "2026-10-06", "10.00", "Prisma Refund", cat("Groceries"))
+        client.txn(token, wallet.id, "2026-10-07", "-25.00", "Pizzeria", cat("Restaurants & Cafes"))
+        client.txn(token, wallet.id, "2026-10-25", "3000.00", "ACME Oy", cat("Salary"))
+        client.txn(token, wallet.id, "2026-10-26", "-500.00", "Savings", cat("Transfers"))
+        client.txn(token, wallet.id, "2026-10-12", "-15.00", "Mystery Shop")
+        client.txn(token, wallet.id, "2026-10-13", "20.00", "Mystery Payer")
+        client.txn(token, wallet.id, "2026-10-14", "-99.00", "Amazon US", cat("Groceries"), currency = "USD")
+        client.txn(token, wallet.id, "2026-09-15", "-100.00", "Lidl September", cat("Groceries"))
+        client.txn(token, wallet.id, "2026-11-01", "-7.00", "Lidl November", cat("Groceries"))
+
+        val stats: StatsDto = client.get("/api/v1/wallets/${wallet.id}/stats?from=2026-10-01&to=2026-10-31") { bearerAuth(token) }.body()
+        assertEquals("EUR", stats.currency)
+        assertEquals(listOf(cat("Groceries"), cat("Restaurants & Cafes"), null), stats.expenses.map { it.categoryId })
+        assertAmount("-90.00", stats.expenses[0].total)
+        assertEquals(3, stats.expenses[0].count)
+        assertAmount("-15.00", stats.expenses[2].total)
+        assertEquals(listOf(cat("Salary"), null), stats.income.map { it.categoryId })
+        assertAmount("130.00", stats.totalExpenses)
+        assertAmount("3020.00", stats.totalIncome)
+        assertEquals(1, stats.otherCurrencyCount)
+
+        assertEquals((5..10).map { "2026-%02d".format(it) }, stats.months.map { it.month })
+        assertAmount("100.00", stats.months[4].expenses)
+        assertAmount("0", stats.months[4].income)
+        assertAmount("130.00", stats.months[5].expenses)
+        assertAmount("3020.00", stats.months[5].income)
+
+        assertEquals(HttpStatusCode.BadRequest, client.get("/api/v1/wallets/${wallet.id}/stats?from=2026-10-31&to=2026-10-01") { bearerAuth(token) }.status)
     }
 }

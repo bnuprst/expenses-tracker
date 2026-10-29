@@ -109,6 +109,36 @@ data class CreateTransactionRequest(
 @Serializable
 data class UpdateTransactionRequest(val categoryId: Long)
 
+/** Transaction list order. Amounts are signed, so AMOUNT_ASC puts the largest outflow first. */
+@Serializable
+enum class TxnSort { DATE_DESC, DATE_ASC, AMOUNT_ASC, AMOUNT_DESC }
+
+// --- statistics ---
+
+/** Signed sum of a category's transactions in the period; null categoryId = uncategorized. */
+@Serializable
+data class CategoryTotalDto(val categoryId: Long? = null, val total: String, val count: Int)
+
+/** Totals for one calendar month (yyyy-MM), as positive magnitudes. */
+@Serializable
+data class MonthTotalDto(val month: String, val expenses: String, val income: String)
+
+@Serializable
+data class StatsDto(
+    val from: String,
+    val to: String,
+    val currency: String,
+    /** Sorted by magnitude, largest first. */
+    val expenses: List<CategoryTotalDto>,
+    val income: List<CategoryTotalDto>,
+    val totalExpenses: String,
+    val totalIncome: String,
+    /** The six calendar months ending with the month of `to`. */
+    val months: List<MonthTotalDto>,
+    /** Transactions in other currencies, left out of the totals (there is no FX conversion). */
+    val otherCurrencyCount: Int,
+)
+
 // --- banking ---
 
 @Serializable
