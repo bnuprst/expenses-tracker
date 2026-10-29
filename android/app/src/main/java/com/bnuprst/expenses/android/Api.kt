@@ -24,6 +24,7 @@ import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.client.plugins.timeout
 import io.ktor.client.request.HttpRequestBuilder
 import io.ktor.client.request.bearerAuth
+import io.ktor.client.request.delete
 import io.ktor.client.request.get
 import io.ktor.client.request.parameter
 import io.ktor.client.request.patch
@@ -111,6 +112,9 @@ class Api(private val baseUrl: () -> String, private val token: () -> String?) {
 
     suspend fun reauthorize(connectionId: Long): BankAuthResponse =
         http.post(url("/bank-connections/$connectionId/reauthorize")) { authed() }.ok()
+
+    suspend fun deleteConnection(connectionId: Long): Unit =
+        http.delete(url("/bank-connections/$connectionId")) { authed() }.ok()
 }
 
 private const val SYNC_TIMEOUT_MS = 5 * 60_000L

@@ -163,6 +163,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         _state.value.wallet?.let { w -> api.connections(w.id).let { c -> _state.update { it.copy(connections = c) } } }
     }
 
+    fun removeConnection(connection: BankConnectionDto) = launchTask {
+        api.deleteConnection(connection.id)
+        _state.update { s -> s.copy(connections = s.connections.filter { it.id != connection.id }, message = "Removed ${connection.aspspName}") }
+    }
+
     /** Deep link from the backend after bank authorisation. */
     fun onBankRedirect(uri: Uri) {
         val ok = uri.getQueryParameter("status") == "ok"

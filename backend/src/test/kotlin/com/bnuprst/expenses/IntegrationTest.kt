@@ -32,6 +32,7 @@ import io.ktor.client.HttpClient
 import io.ktor.client.call.body
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.client.request.bearerAuth
+import io.ktor.client.request.delete
 import io.ktor.client.request.get
 import io.ktor.client.request.patch
 import io.ktor.client.request.post
@@ -48,6 +49,8 @@ import io.ktor.server.testing.testApplication
 import org.jetbrains.exposed.sql.transactions.transaction
 import org.testcontainers.containers.PostgreSQLContainer
 import java.time.LocalDate
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.withTimeout
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -121,6 +124,16 @@ class IntegrationTest {
 
     private suspend fun HttpClient.createWallet(token: String): WalletDto =
         post("/api/v1/wallets") { bearerAuth(token); json(); setBody(mapOf("name" to "Family", "currency" to "EUR")) }.body()
+
+    /** The bank callback starts a background sync; a sync request made meanwhile returns at once, so wait it out. */
+    private suspend fun HttpClient.sync(token: String, connectionId: Long): SyncResultDto = withTimeout(10_000) {
+        var r: SyncResultDto = post("/api/v1/bank-connections/$connectionId/sync") { bearerAuth(token) }.body()
+        while (r.error?.startsWith("A sync is already running") == true) {
+            delay(20)
+            r = post("/api/v1/bank-connections/$connectionId/sync") { bearerAuth(token) }.body()
+        }
+        r
+    }
 
     private suspend fun HttpClient.addTxn(token: String, walletId: Long, desc: String, counterparty: String?): TransactionDto =
         post("/api/v1/wallets/$walletId/transactions") {
@@ -197,9 +210,9 @@ class IntegrationTest {
         assertEquals("ok", location.parameters["status"])
         assertEquals(auth.connectionId.toString(), location.parameters["connection"])
 
-        val r1: SyncResultDto = client.post("/api/v1/bank-connections/${auth.connectionId}/sync") { bearerAuth(token) }.body()
-        val r2: SyncResultDto = client.post("/api/v1/bank-connections/${auth.connectionId}/sync") { bearerAuth(token) }.body()
-        // The callback also starts a background sync; between all syncs exactly two rows exist.
+        val r1: SyncResultDto = client.sync(token, auth.connectionId)
+        val r2: SyncResultDto = client.sync(token, auth.connectionId)
+        // The callback also started a background sync, which fetched first; between all syncs exactly two rows exist.
         assertEquals(0, r2.inserted)
         assertTrue(r1.inserted <= 2)
         val txns: List<TransactionDto> = client.get("/api/v1/wallets/${wallet.id}/transactions") { bearerAuth(token) }.body()
@@ -210,6 +223,28 @@ class IntegrationTest {
         assertEquals(ConnectionStatus.ACTIVE, conn.status)
         assertEquals("•••• 0785", conn.accounts.single().ibanMasked)
         assertEquals(false, conn.renewSoon)
+    }
+
+    @Test
+    fun `abandoned connection attempts are replaced and connections can be removed`() = app { client ->
+        val anna = client.register("anna@example.com").token
+        val ben = client.register("ben@example.com").token
+        val wallet = client.createWallet(anna)
+        suspend fun connect(): BankAuthResponse = client.post("/api/v1/wallets/${wallet.id}/bank-connections") {
+            bearerAuth(anna); json(); setBody(mapOf("aspspName" to "Nordea", "country" to "fi"))
+        }.body()
+        suspend fun list(): List<BankConnectionDto> = client.get("/api/v1/bank-connections") { bearerAuth(anna) }.body()
+
+        connect()
+        connect()
+        client.get("/api/v1/banking/callback?state=${bank.lastAuth!!.state}&error=access_denied")
+        assertEquals(ConnectionStatus.ERROR, list().single().status)
+        val latest = connect()
+        assertEquals(listOf(latest.connectionId), list().map { it.id }, "the errored attempt is replaced")
+
+        assertEquals(HttpStatusCode.NotFound, client.delete("/api/v1/bank-connections/${latest.connectionId}") { bearerAuth(ben) }.status)
+        assertEquals(HttpStatusCode.NoContent, client.delete("/api/v1/bank-connections/${latest.connectionId}") { bearerAuth(anna) }.status)
+        assertTrue(list().isEmpty())
     }
 
     @Test
@@ -267,13 +302,13 @@ class IntegrationTest {
             bearerAuth(token); json(); setBody(mapOf("aspspName" to "Nordea", "country" to "FI"))
         }.body()
         client.get("/api/v1/banking/callback?state=${bank.lastAuth!!.state}&code=abc")
-        client.post("/api/v1/bank-connections/${auth.connectionId}/sync") { bearerAuth(token) }
+        client.sync(token, auth.connectionId)
         assertEquals(recent, bank.dateFroms.first())
         val all: List<TransactionDto> = client.get("/api/v1/wallets/${wallet.id}/transactions") { bearerAuth(token) }.body()
         val bankRows = all.filter { it.bankAccountId != null }.map { it.amount }.toSet()
         assertEquals(setOf("-3.20", "-15.00"), bankRows)
         // The next sync's 7-day overlap re-fetches the boundary day: the imported row must still win.
-        client.post("/api/v1/bank-connections/${auth.connectionId}/sync") { bearerAuth(token) }
+        client.sync(token, auth.connectionId)
         val again2: List<TransactionDto> = client.get("/api/v1/wallets/${wallet.id}/transactions") { bearerAuth(token) }.body()
         assertEquals(listOf("-15.00", "-3.20"), again2.filter { it.bankAccountId != null }.map { it.amount }.sorted())
     }
@@ -321,12 +356,12 @@ class IntegrationTest {
             bearerAuth(token); json(); setBody(mapOf("aspspName" to "Nordea", "country" to "FI"))
         }.body()
         client.get("/api/v1/banking/callback?state=${bank.lastAuth!!.state}&code=abc")
-        client.post("/api/v1/bank-connections/${auth.connectionId}/sync") { bearerAuth(token) }
+        client.sync(token, auth.connectionId)
         val before: List<TransactionDto> = client.get("/api/v1/wallets/${wallet.id}/review") { bearerAuth(token) }.body()
         assertEquals(TxnStatus.UNCATEGORIZED, before.single().status)
 
         llm.fail = false
-        client.post("/api/v1/bank-connections/${auth.connectionId}/sync") { bearerAuth(token) }
+        client.sync(token, auth.connectionId)
         val after: List<TransactionDto> = client.get("/api/v1/wallets/${wallet.id}/transactions") { bearerAuth(token) }.body()
         assertEquals(TxnStatus.CATEGORIZED, after.single().status)
         assertEquals(CategorySource.LLM, after.single().categorySource)

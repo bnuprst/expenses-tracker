@@ -21,6 +21,7 @@ import io.ktor.server.response.respond
 import io.ktor.server.response.respondRedirect
 import io.ktor.server.response.respondText
 import io.ktor.server.routing.Route
+import io.ktor.server.routing.delete
 import io.ktor.server.routing.get
 import io.ktor.server.routing.patch
 import io.ktor.server.routing.post
@@ -134,6 +135,11 @@ private fun Route.bankingRoutes(s: Services) {
         post("/{id}/reauthorize") {
             val banking = s.banking ?: throw NotFound("Bank sync is not configured")
             call.respond(banking.reauthorize(call.userId(), call.longParam("id")))
+        }
+        delete("/{id}") {
+            val banking = s.banking ?: throw NotFound("Bank sync is not configured")
+            banking.delete(call.userId(), call.longParam("id"))
+            call.respond(HttpStatusCode.NoContent)
         }
     }
 }
