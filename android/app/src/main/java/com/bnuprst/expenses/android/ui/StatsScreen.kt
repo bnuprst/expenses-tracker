@@ -60,11 +60,18 @@ private data class Share(val categoryId: Long?, val name: String, val amount: Bi
 @Composable
 fun StatsScreen(state: UiState, vm: AppViewModel) {
     var side by rememberSaveable { mutableStateOf(CategoryKind.EXPENSE) }
-    val stats = state.stats
+    // Only show figures that belong to the selected period, never a previous one's while it reloads or after it failed.
+    val stats = state.stats?.takeIf { it.from == state.statsPeriod.from.toString() && it.to == state.statsPeriod.to.toString() }
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
         item(key = "period") { PeriodSelector(state.statsPeriod, vm::setStatsPeriod) }
         if (stats == null) {
-            if (!state.loading) item { EmptyState(painterResource(R.drawable.ic_bar_chart), "No statistics yet") }
+            if (!state.loading) item(key = "failed") {
+                // EmptyState scrolls, so inside a LazyColumn it needs a bounded height.
+                EmptyState(
+                    painterResource(R.drawable.ic_bar_chart), "Couldn't load statistics", "Pull down to try again.",
+                    Modifier.height(320.dp),
+                )
+            }
             return@LazyColumn
         }
         item(key = "summary") { Summary(stats) }

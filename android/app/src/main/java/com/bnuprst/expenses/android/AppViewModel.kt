@@ -222,17 +222,35 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    private suspend fun fetchTransactions(walletId: Long, append: Boolean, limit: Int = PAGE_SIZE) {
+    private suspend fun fetchTransactions(walletId: Long, append: Boolean) {
         val filter = _state.value.filter
         val offset = if (append) _state.value.transactions.size else 0
-        val page = api.transactions(walletId, filter, offset, limit)
+        val page = api.transactions(walletId, filter, offset, PAGE_SIZE)
         _state.update { s ->
             if (s.filter != filter) return@update s // a newer filter has taken over
             s.copy(
                 transactions = if (append) (s.transactions + page).distinctBy { it.id } else page,
-                hasMore = page.size == limit,
+                hasMore = page.size == PAGE_SIZE,
             )
         }
+    }
+
+    /**
+     * Reloads as many rows as are already shown, in pages the server will serve in full (it caps a page at
+     * [SERVER_MAX_PAGE]), so the list keeps its length and paging carries on where it was.
+     */
+    private suspend fun refetchLoaded(walletId: Long) {
+        val filter = _state.value.filter
+        val wanted = maxOf(PAGE_SIZE, _state.value.transactions.size)
+        val rows = mutableListOf<TransactionDto>()
+        var hasMore = true
+        while (hasMore && rows.size < wanted) {
+            val limit = (wanted - rows.size).coerceIn(PAGE_SIZE, SERVER_MAX_PAGE)
+            val page = api.transactions(walletId, filter, rows.size, limit)
+            rows += page
+            hasMore = page.size == limit
+        }
+        _state.update { s -> if (s.filter != filter) s else s.copy(transactions = rows.distinctBy { it.id }, hasMore = hasMore) }
     }
 
     fun setCategory(txn: TransactionDto, categoryId: Long) = launchTask {
@@ -242,9 +260,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         _state.value.wallet?.let { w ->
             val review = api.review(w.id)
             _state.update { it.copy(review = review) }
-            if (_state.value.transactions.isNotEmpty()) {
-                fetchTransactions(w.id, append = false, limit = maxOf(PAGE_SIZE, _state.value.transactions.size))
-            }
+            if (_state.value.transactions.isNotEmpty()) refetchLoaded(w.id)
             if (_state.value.stats != null) fetchStats(w.id)
         }
     }
@@ -252,7 +268,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     // --- statistics ---
 
     fun setStatsPeriod(period: StatsPeriod) {
-        _state.update { it.copy(statsPeriod = period) }
+        // The old figures belong to another period; drop them so a failed load can't leave them on screen.
+        _state.update { it.copy(statsPeriod = period, stats = null) }
         val wallet = _state.value.wallet ?: return
         launchTask { fetchStats(wallet.id) }
     }
@@ -324,4 +341,6 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 }
 
 private const val PAGE_SIZE = 100
+/** The backend's limit on one transactions page. */
+private const val SERVER_MAX_PAGE = 1000
 private const val SEARCH_DEBOUNCE_MS = 300L
