@@ -78,8 +78,9 @@ fun TransactionDetailsSheet(
 
             SelectionContainer {
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    txn.counterparty?.let { name ->
-                        Detail(if (incoming) "From" else "To", name + (txn.counterpartyIban?.let { "\n" + formatIban(it) } ?: ""))
+                    // Name and IBAN are independently optional; show whichever the bank sent.
+                    listOfNotNull(txn.counterparty, txn.counterpartyIban?.let(::formatIban)).takeIf { it.isNotEmpty() }?.let { party ->
+                        Detail(if (incoming) "From" else "To", party.joinToString("\n"))
                     }
                     if (txn.description != txn.counterparty) Detail("Description", txn.description)
                     txn.paymentType?.let { Detail("Type", it) }
