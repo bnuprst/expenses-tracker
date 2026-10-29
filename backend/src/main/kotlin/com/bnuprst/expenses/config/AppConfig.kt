@@ -46,7 +46,7 @@ data class AppConfig(
                         redirectUrl = get("EB_REDIRECT_URL", "$publicBaseUrl/api/v1/banking/callback"),
                         appRedirectUrl = get("APP_REDIRECT_URL", "expenses://bank-connected"),
                         consentDays = get("EB_CONSENT_DAYS", "180").toLong(),
-                        syncInterval = Duration.parse(get("SYNC_INTERVAL", "PT6H")),
+                        syncInterval = Duration.parse(get("SYNC_INTERVAL", "PT8H")),
                         initialHistoryDays = get("EB_INITIAL_HISTORY_DAYS", "90").toLong(),
                     )
                 },

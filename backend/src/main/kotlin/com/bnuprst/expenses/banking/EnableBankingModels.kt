@@ -98,11 +98,18 @@ data class EbParty(val name: String? = null)
 @Serializable
 data class EbBankTxnCode(val description: String? = null)
 
+/** The user's side of a request they triggered themselves, forwarded so the bank treats it as user-present. */
+data class PsuContext(val ipAddress: String, val userAgent: String?)
+
 class EnableBankingException(val status: Int, val body: String) : RuntimeException("Enable Banking HTTP $status: ${body.take(300)}") {
     /** Session no longer usable; the user must re-authorise. */
     val isConsentProblem: Boolean
         get() = status == 401 || status == 403 ||
             (status in 400..499 && SESSION_ERRORS.any { body.contains(it, ignoreCase = true) })
+
+    /** The bank's limit on requests made without the user present (PSD2: usually 4 per account per day). */
+    val isRateLimited: Boolean
+        get() = status == 429
 
     /** Enable Banking's own error message (e.g. "Redirect URI not allowed"), safe to show to the user. */
     val apiMessage: String

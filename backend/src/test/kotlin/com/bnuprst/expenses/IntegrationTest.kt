@@ -12,6 +12,8 @@ import com.bnuprst.expenses.banking.EbSessionResponse
 import com.bnuprst.expenses.banking.EbTransaction
 import com.bnuprst.expenses.banking.EbTransactionsPage
 import com.bnuprst.expenses.banking.EnableBankingApi
+import com.bnuprst.expenses.banking.EnableBankingException
+import com.bnuprst.expenses.banking.PsuContext
 import com.bnuprst.expenses.categorization.FakeLlm
 import com.bnuprst.expenses.config.AppConfig
 import com.bnuprst.expenses.config.DbConfig
@@ -34,6 +36,7 @@ import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.client.request.bearerAuth
 import io.ktor.client.request.delete
 import io.ktor.client.request.get
+import io.ktor.client.request.header
 import io.ktor.client.request.patch
 import io.ktor.client.request.post
 import io.ktor.client.request.setBody
@@ -78,15 +81,22 @@ class FakeBank : EnableBankingApi {
     var pages: List<EbTransaction> = emptyList()
     var transactionCalls = 0
     val dateFroms = mutableListOf<LocalDate>()
+    val psus = mutableListOf<PsuContext?>()
+    /** Rejects requests made without the user present, like a bank whose PSD2 daily limit is used up. */
+    var unattendedLimitReached = false
 
     override suspend fun aspsps(country: String?) = listOf(EbAspsp("Nordea", "FI", maximumConsentValidity = 90L * 86400))
     override suspend fun startAuth(request: EbAuthRequest) = EbAuthResponse("https://bank.example/auth?s=${request.state}").also { lastAuth = request }
     override suspend fun createSession(code: String) =
         EbSessionResponse("sess-1", access = EbAccess("2027-01-01T00:00:00+00:00")) to
             listOf(EbAccount("uid-1", EbAccountId(iban = "FI2112345600000785"), "hash-1", "Main", "EUR"))
-    override suspend fun transactions(accountUid: String, dateFrom: LocalDate, continuationKey: String?): EbTransactionsPage {
+    override suspend fun transactions(accountUid: String, dateFrom: LocalDate, continuationKey: String?, psu: PsuContext?): EbTransactionsPage {
         transactionCalls++
         dateFroms += dateFrom
+        psus += psu
+        if (unattendedLimitReached && psu == null) {
+            throw EnableBankingException(429, """{"code":429,"message":"Too many requests","error":"ASPSP_RATE_LIMIT_EXCEEDED"}""")
+        }
         return EbTransactionsPage(pages)
     }
 }
@@ -94,6 +104,7 @@ class FakeBank : EnableBankingApi {
 class IntegrationTest {
     private val llm = FakeLlm("""{"category_id": 0, "confidence": 0.3}""")
     private val bank = FakeBank()
+    private lateinit var services: Services
 
     @BeforeTest
     fun reset() {
@@ -107,7 +118,7 @@ class IntegrationTest {
                 "LLM_API_KEY" to "x", "APP_REDIRECT_URL" to "expenses://bank-connected",
             )
         )
-        val services = buildServices(base.copy(db = TestDb.config), llmProvider = llm, bankingApi = bank)
+        services = buildServices(base.copy(db = TestDb.config), llmProvider = llm, bankingApi = bank)
         application { module(services) }
         val client = createClient {
             install(ContentNegotiation) { json() }
@@ -223,6 +234,34 @@ class IntegrationTest {
         assertEquals(ConnectionStatus.ACTIVE, conn.status)
         assertEquals("•••• 0785", conn.accounts.single().ibanMasked)
         assertEquals(false, conn.renewSoon)
+    }
+
+    @Test
+    fun `user syncs are marked user-present and scheduled syncs pause at the bank's daily limit`() = app { client ->
+        val token = client.register("anna@example.com").token
+        val wallet = client.createWallet(token)
+        val auth: BankAuthResponse = client.post("/api/v1/wallets/${wallet.id}/bank-connections") {
+            bearerAuth(token); json(); setBody(mapOf("aspspName" to "Nordea", "country" to "fi"))
+        }.body()
+        client.get("/api/v1/banking/callback?state=${bank.lastAuth!!.state}&code=abc")
+        client.sync(token, auth.connectionId)
+        bank.unattendedLimitReached = true
+
+        val manual: SyncResultDto = client.post("/api/v1/bank-connections/${auth.connectionId}/sync") {
+            bearerAuth(token)
+            header("X-Forwarded-For", "10.0.0.1, 203.0.113.7")
+            header(HttpHeaders.UserAgent, "ExpensesApp/1.0")
+        }.body()
+        assertEquals(null, manual.error)
+        assertEquals(PsuContext("203.0.113.7", "ExpensesApp/1.0"), bank.psus.last())
+
+        services.banking!!.syncAll()
+        val conn = client.get("/api/v1/bank-connections") { bearerAuth(token) }.body<List<BankConnectionDto>>().single()
+        assertTrue(conn.lastSyncError!!.contains("daily limit"), conn.lastSyncError)
+
+        val calls = bank.transactionCalls
+        services.banking!!.syncAll()
+        assertEquals(calls, bank.transactionCalls, "a paused connection must not be synced in the background")
     }
 
     @Test

@@ -31,7 +31,11 @@ As a result, LLM calls drop over time.
 
 - **Authentication**: an application JWT (RS256, `kid` = application id) signed with your Enable Banking private key.
 - **Connect flow**: `POST /wallets/{id}/bank-connections` returns the bank's authorization URL. The bank redirects to `/api/v1/banking/callback`. The backend then creates the session, stores the accounts, starts a first sync and redirects the browser to the app (`expenses://bank-connected`).
-- **Scheduled pull**: runs every `SYNC_INTERVAL` (default 6h). The first sync fetches `EB_INITIAL_HISTORY_DAYS`. After that, each sync starts 7 days before the last booking date, because banks book late.
+- **Scheduled pull**: runs every `SYNC_INTERVAL` (default 8h). The first sync fetches `EB_INITIAL_HISTORY_DAYS`. After that, each sync starts 7 days before the last booking date, because banks book late.
+- **Bank rate limits**: under PSD2, banks allow only about 4 background requests per account per day.
+  - Syncs the user starts (*Sync now*, the first sync after connecting) forward the user's IP and User-Agent as `Psu-Ip-Address` / `Psu-User-Agent`, so the bank doesn't count them against that limit.
+  - The default 8h interval leaves headroom under the limit; don't set `SYNC_INTERVAL` below 6h.
+  - When the bank still answers 429 to a scheduled sync, scheduled syncs of that connection pause until the next day (UTC).
 - **Dedup**: a transaction is unique on (account, `entry_reference`). When a bank sends no reference, a content hash with an occurrence index is used instead. Pending transactions are skipped until they are booked.
 - **Consent**: requested for `min(EB_CONSENT_DAYS, the bank's maximum)`.
   - The connection shows `renewSoon` 7 days before expiry and becomes `EXPIRED` afterwards.

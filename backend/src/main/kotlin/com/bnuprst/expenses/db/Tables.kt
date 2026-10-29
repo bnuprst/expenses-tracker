@@ -45,6 +45,7 @@ object BankConnections : Table("bank_connections") {
     val authState = text("auth_state").nullable()
     val validUntil = timestampWithTimeZone("valid_until").nullable()
     val status = varchar("status", 16)
+    val syncPausedUntil = timestampWithTimeZone("sync_paused_until").nullable()
     override val primaryKey = PrimaryKey(id)
 }
 

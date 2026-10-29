@@ -7,6 +7,7 @@ import io.ktor.client.HttpClient
 import io.ktor.client.request.HttpRequestBuilder
 import io.ktor.client.request.bearerAuth
 import io.ktor.client.request.get
+import io.ktor.client.request.header
 import io.ktor.client.request.parameter
 import io.ktor.client.request.post
 import io.ktor.client.request.setBody
@@ -36,7 +37,8 @@ interface EnableBankingApi {
     suspend fun startAuth(request: EbAuthRequest): EbAuthResponse
     /** Exchanges the redirect `code` for a session; accounts are always returned fully populated. */
     suspend fun createSession(code: String): Pair<EbSessionResponse, List<EbAccount>>
-    suspend fun transactions(accountUid: String, dateFrom: LocalDate, continuationKey: String?): EbTransactionsPage
+    /** [psu] marks the request as made while the user is present; banks don't count those against the PSD2 daily limit. */
+    suspend fun transactions(accountUid: String, dateFrom: LocalDate, continuationKey: String?, psu: PsuContext? = null): EbTransactionsPage
 }
 
 class EnableBankingClient(
@@ -64,9 +66,13 @@ class EnableBankingClient(
         return session to accounts
     }
 
-    override suspend fun transactions(accountUid: String, dateFrom: LocalDate, continuationKey: String?): EbTransactionsPage =
+    override suspend fun transactions(accountUid: String, dateFrom: LocalDate, continuationKey: String?, psu: PsuContext?): EbTransactionsPage =
         call(http.get("${config.apiBase}/accounts/$accountUid/transactions") {
             auth()
+            psu?.let {
+                header("Psu-Ip-Address", it.ipAddress)
+                it.userAgent?.let { ua -> header("Psu-User-Agent", ua) }
+            }
             parameter("date_from", dateFrom.toString())
             continuationKey?.let { parameter("continuation_key", it) }
         })
