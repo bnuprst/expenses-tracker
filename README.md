@@ -109,8 +109,9 @@ cd android
 | GET/POST | `/wallets/{id}/members` | owners add existing users by email |
 | GET | `/wallets/{id}/categories` | |
 | GET/POST | `/wallets/{id}/rules` | |
-| GET/POST | `/wallets/{id}/transactions` | filters: `from`, `to`, `status`, `category`, `limit`, `offset` |
+| GET/POST | `/wallets/{id}/transactions` | filters: `from`, `to`, `status`, `category` (id or `none`), `q` (description/counterparty search), `sort` (`DATE_DESC`, `DATE_ASC`, `AMOUNT_ASC`, `AMOUNT_DESC`), `limit`, `offset` |
 | GET | `/wallets/{id}/review` | review queue |
+| GET | `/wallets/{id}/stats?from=&to=` | per-category totals in the wallet currency plus a 6-month trend (defaults to the current month); transfers excluded |
 | PATCH | `/transactions/{id}` | `{categoryId}`, learns merchant memory |
 | GET | `/banking/aspsps?country=FI` | available banks |
 | POST | `/wallets/{id}/import` | owner only; bulk history import (see above) |
@@ -119,4 +120,4 @@ cd android
 | POST | `/bank-connections/{id}/sync`, `/bank-connections/{id}/reauthorize` | |
 
 ## Not yet built
-Budgets and reports, push notifications (for example, consent renewal reminders), offline mode in the app, a rule editor UI, multi-currency conversion, refresh tokens.
+Budgets, push notifications (for example, consent renewal reminders), offline mode in the app, a rule editor UI, multi-currency conversion, refresh tokens.

@@ -12,22 +12,40 @@ import com.bnuprst.expenses.db.Rules
 import com.bnuprst.expenses.db.Transactions
 import com.bnuprst.expenses.db.Wallets
 import com.bnuprst.expenses.db.dbQuery
+import com.bnuprst.expenses.shared.CategoryKind
 import com.bnuprst.expenses.shared.CategorySource
+import com.bnuprst.expenses.shared.CategoryTotalDto
 import com.bnuprst.expenses.shared.CreateRuleRequest
 import com.bnuprst.expenses.shared.CreateTransactionRequest
+import com.bnuprst.expenses.shared.MonthTotalDto
 import com.bnuprst.expenses.shared.RuleDto
+import com.bnuprst.expenses.shared.StatsDto
 import com.bnuprst.expenses.shared.TransactionDto
+import com.bnuprst.expenses.shared.TxnSort
 import com.bnuprst.expenses.shared.TxnStatus
 import com.bnuprst.expenses.wallets.WalletService
+import org.jetbrains.exposed.sql.LikePattern
+import org.jetbrains.exposed.sql.Op
 import org.jetbrains.exposed.sql.ResultRow
 import org.jetbrains.exposed.sql.SortOrder
+import org.jetbrains.exposed.sql.SqlExpressionBuilder.eq
+import org.jetbrains.exposed.sql.SqlExpressionBuilder.greaterEq
+import org.jetbrains.exposed.sql.SqlExpressionBuilder.less
+import org.jetbrains.exposed.sql.SqlExpressionBuilder.lessEq
 import org.jetbrains.exposed.sql.and
+import org.jetbrains.exposed.sql.count
 import org.jetbrains.exposed.sql.insert
 import org.jetbrains.exposed.sql.insertIgnore
+import org.jetbrains.exposed.sql.javatime.month
+import org.jetbrains.exposed.sql.javatime.year
+import org.jetbrains.exposed.sql.lowerCase
+import org.jetbrains.exposed.sql.or
 import org.jetbrains.exposed.sql.selectAll
+import org.jetbrains.exposed.sql.sum
 import org.jetbrains.exposed.sql.update
 import java.math.BigDecimal
 import java.time.LocalDate
+import java.time.YearMonth
 import java.time.format.DateTimeParseException
 
 /**
@@ -65,6 +83,7 @@ class TransactionService(
     suspend fun list(
         userId: Long, walletId: Long,
         from: LocalDate?, to: LocalDate?, status: TxnStatus?, categoryId: Long?,
+        query: String? = null, uncategorized: Boolean = false, sort: TxnSort = TxnSort.DATE_DESC,
         limit: Int = 200, offset: Long = 0,
     ): List<TransactionDto> {
         wallets.requireRole(userId, walletId)
@@ -75,11 +94,108 @@ class TransactionService(
                 to?.let { cond = cond and (Transactions.bookingDate lessEq it) }
                 status?.let { cond = cond and (Transactions.status eq it.name) }
                 categoryId?.let { cond = cond and (Transactions.categoryId eq it) }
+                if (uncategorized) cond = cond and Transactions.categoryId.isNull()
+                query?.trim()?.lowercase()?.takeIf { it.isNotEmpty() }?.let { q ->
+                    val literal = LikePattern.ofLiteral(q)
+                    val pattern = LikePattern("%${literal.pattern}%", literal.escapeChar)
+                    cond = cond and ((Transactions.descriptionRaw.lowerCase() like pattern) or (Transactions.counterparty.lowerCase() like pattern))
+                }
                 cond
             }
-                .orderBy(Transactions.bookingDate to SortOrder.DESC, Transactions.id to SortOrder.DESC)
+                // The id tie-breaker keeps offset paging stable when many rows share a date or amount.
+                .orderBy(
+                    *when (sort) {
+                        TxnSort.DATE_DESC -> arrayOf(Transactions.bookingDate to SortOrder.DESC, Transactions.id to SortOrder.DESC)
+                        TxnSort.DATE_ASC -> arrayOf(Transactions.bookingDate to SortOrder.ASC, Transactions.id to SortOrder.ASC)
+                        TxnSort.AMOUNT_ASC -> arrayOf(Transactions.amount to SortOrder.ASC, Transactions.id to SortOrder.DESC)
+                        TxnSort.AMOUNT_DESC -> arrayOf(Transactions.amount to SortOrder.DESC, Transactions.id to SortOrder.DESC)
+                    }
+                )
                 .limit(limit.coerceIn(1, 1000)).offset(offset)
                 .map { it.toDto() }
+        }
+    }
+
+    /**
+     * Per-category totals for [from]..[to] in the wallet currency, plus a six-month trend ending with the
+     * month of [to]. Category kind decides the side (transfers are left out); uncategorized rows go by sign.
+     * Sums are signed, so a refund nets against its category.
+     */
+    suspend fun stats(userId: Long, walletId: Long, from: LocalDate, to: LocalDate): StatsDto {
+        wallets.requireRole(userId, walletId)
+        if (from > to) throw BadRequest("from must not be after to")
+        val kinds = WalletService.categoriesOf(walletId).associate { it.id to it.kind }
+        fun side(categoryId: Long?, negative: Boolean): CategoryKind? = when (categoryId?.let { kinds[it] }) {
+            CategoryKind.EXPENSE -> CategoryKind.EXPENSE
+            CategoryKind.INCOME -> CategoryKind.INCOME
+            CategoryKind.TRANSFER -> null
+            null -> if (negative) CategoryKind.EXPENSE else CategoryKind.INCOME
+        }
+        val trendFrom = YearMonth.from(to).minusMonths(TREND_MONTHS - 1L).atDay(1)
+        val trendTo = YearMonth.from(to).atEndOfMonth()
+        val sum = Transactions.amount.sum()
+        val count = Transactions.id.count()
+        val year = Transactions.bookingDate.year()
+        val month = Transactions.bookingDate.month()
+
+        return dbQuery {
+            val currency = Wallets.select(Wallets.currency).where { Wallets.id eq walletId }.single()[Wallets.currency]
+            val inWallet = (Transactions.walletId eq walletId) and (Transactions.currency eq currency)
+            fun inRange(a: LocalDate, b: LocalDate) = (Transactions.bookingDate greaterEq a) and (Transactions.bookingDate lessEq b)
+            // Grouped separately per sign so uncategorized rows can be split into spending and income.
+            fun bySign(block: (Op<Boolean>, Boolean) -> Unit) {
+                block(Transactions.amount less BigDecimal.ZERO, true)
+                block(Transactions.amount greaterEq BigDecimal.ZERO, false)
+            }
+
+            val totals = mapOf(CategoryKind.EXPENSE to HashMap<Long?, Pair<BigDecimal, Long>>(), CategoryKind.INCOME to HashMap())
+            bySign { signCond, negative ->
+                Transactions.select(Transactions.categoryId, sum, count)
+                    .where { inWallet and inRange(from, to) and signCond }
+                    .groupBy(Transactions.categoryId)
+                    .forEach { row ->
+                        val cat = row[Transactions.categoryId]
+                        val target = totals[side(cat, negative)] ?: return@forEach
+                        val (t, n) = target[cat] ?: (BigDecimal.ZERO to 0L)
+                        target[cat] = (t + (row[sum] ?: BigDecimal.ZERO)) to (n + row[count])
+                    }
+            }
+
+            val months = linkedMapOf<YearMonth, Pair<BigDecimal, BigDecimal>>()
+            generateSequence(YearMonth.from(trendFrom)) { it.plusMonths(1) }.take(TREND_MONTHS)
+                .forEach { months[it] = BigDecimal.ZERO to BigDecimal.ZERO }
+            bySign { signCond, negative ->
+                Transactions.select(year, month, Transactions.categoryId, sum)
+                    .where { inWallet and inRange(trendFrom, trendTo) and signCond }
+                    .groupBy(year, month, Transactions.categoryId)
+                    .forEach { row ->
+                        val ym = YearMonth.of(row[year], row[month])
+                        val (spent, earned) = months[ym] ?: return@forEach
+                        val amount = row[sum] ?: BigDecimal.ZERO
+                        months[ym] = when (side(row[Transactions.categoryId], negative)) {
+                            CategoryKind.EXPENSE -> (spent - amount) to earned
+                            CategoryKind.INCOME -> spent to (earned + amount)
+                            else -> spent to earned
+                        }
+                    }
+            }
+
+            val otherCurrency = Transactions.select(count)
+                .where { (Transactions.walletId eq walletId) and (Transactions.currency neq currency) and inRange(from, to) }
+                .single()[count]
+
+            fun List<Pair<Long?, Pair<BigDecimal, Long>>>.dtos() =
+                map { (cat, v) -> CategoryTotalDto(cat, v.first.toPlainString(), v.second.toInt()) }
+            val expenses = totals.getValue(CategoryKind.EXPENSE).toList().sortedBy { it.second.first }
+            val income = totals.getValue(CategoryKind.INCOME).toList().sortedByDescending { it.second.first }
+            StatsDto(
+                from = from.toString(), to = to.toString(), currency = currency,
+                expenses = expenses.dtos(), income = income.dtos(),
+                totalExpenses = expenses.fold(BigDecimal.ZERO) { acc, e -> acc - e.second.first }.toPlainString(),
+                totalIncome = income.fold(BigDecimal.ZERO) { acc, e -> acc + e.second.first }.toPlainString(),
+                months = months.map { (ym, v) -> MonthTotalDto(ym.toString(), v.first.toPlainString(), v.second.toPlainString()) },
+                otherCurrencyCount = otherCurrency.toInt(),
+            )
         }
     }
 
@@ -287,6 +403,7 @@ class TransactionService(
 }
 
 private const val RETRY_LIMIT = 50
+private const val TREND_MONTHS = 6
 
 fun ResultRow.toDto() = TransactionDto(
     id = this[Transactions.id],

@@ -8,31 +8,75 @@ import androidx.lifecycle.viewModelScope
 import com.bnuprst.expenses.shared.AspspDto
 import com.bnuprst.expenses.shared.BankConnectionDto
 import com.bnuprst.expenses.shared.CategoryDto
+import com.bnuprst.expenses.shared.StatsDto
 import com.bnuprst.expenses.shared.TransactionDto
+import com.bnuprst.expenses.shared.TxnSort
 import com.bnuprst.expenses.shared.WalletDto
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.FlowPreview
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import java.time.LocalDate
+import java.time.YearMonth
 
-enum class WalletTab { TRANSACTIONS, REVIEW, BANKS }
+enum class WalletTab { TRANSACTIONS, REVIEW, STATS, BANKS }
+
+data class DateRange(val from: LocalDate, val to: LocalDate)
+
+data class TxnFilter(
+    val query: String = "",
+    val categoryId: Long? = null,
+    val uncategorized: Boolean = false,
+    val period: DateRange? = null,
+    val sort: TxnSort = TxnSort.DATE_DESC,
+) {
+    val isActive get() = query.isNotBlank() || categoryId != null || uncategorized || period != null || sort != TxnSort.DATE_DESC
+}
+
+enum class StatsGranularity { MONTH, YEAR }
+
+data class StatsPeriod(val granularity: StatsGranularity = StatsGranularity.MONTH, val anchor: LocalDate = LocalDate.now()) {
+    val from: LocalDate get() = when (granularity) {
+        StatsGranularity.MONTH -> anchor.withDayOfMonth(1)
+        StatsGranularity.YEAR -> anchor.withDayOfYear(1)
+    }
+    val to: LocalDate get() = when (granularity) {
+        StatsGranularity.MONTH -> YearMonth.from(anchor).atEndOfMonth()
+        StatsGranularity.YEAR -> anchor.withDayOfYear(anchor.lengthOfYear())
+    }
+    fun shift(n: Long) = copy(anchor = if (granularity == StatsGranularity.MONTH) anchor.plusMonths(n) else anchor.plusYears(n))
+}
 
 data class UiState(
     val serverUrl: String = "",
     val loggedIn: Boolean = false,
     val userName: String = "",
-    val loading: Boolean = false,
+    /** Number of running tasks; a counter so a cancelled task can't clear another one's indicator. */
+    val busy: Int = 0,
+    val refreshing: Boolean = false,
     val message: String? = null,
     val wallets: List<WalletDto> = emptyList(),
     val wallet: WalletDto? = null,
     val tab: WalletTab = WalletTab.TRANSACTIONS,
     val categories: List<CategoryDto> = emptyList(),
     val transactions: List<TransactionDto> = emptyList(),
+    val filter: TxnFilter = TxnFilter(),
+    val hasMore: Boolean = false,
+    val loadingMore: Boolean = false,
     val review: List<TransactionDto> = emptyList(),
+    val statsPeriod: StatsPeriod = StatsPeriod(),
+    val stats: StatsDto? = null,
     val connections: List<BankConnectionDto> = emptyList(),
     val aspsps: List<AspspDto> = emptyList(),
-)
+) {
+    val loading get() = busy > 0
+}
 
 class AppViewModel(app: Application) : AndroidViewModel(app) {
     private val prefs = app.getSharedPreferences("session", Context.MODE_PRIVATE)
@@ -50,21 +94,26 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     private val api = Api(baseUrl = { _state.value.serverUrl }, token = { prefs.getString("token", null) })
 
+    private val searchInput = MutableStateFlow("")
+    private var txnJob: Job? = null
+
     init {
         if (_state.value.loggedIn) loadWallets()
+        @OptIn(FlowPreview::class)
+        viewModelScope.launch { searchInput.drop(1).debounce(SEARCH_DEBOUNCE_MS).collect { reloadTransactions() } }
     }
 
-    private fun launchTask(block: suspend () -> Unit) {
-        viewModelScope.launch {
-            _state.update { it.copy(loading = true, message = null) }
-            try {
-                block()
-            } catch (e: Exception) {
-                if (e.message == "Unauthorized") logout()
-                _state.update { it.copy(message = e.message ?: e.javaClass.simpleName) }
-            } finally {
-                _state.update { it.copy(loading = false) }
-            }
+    private fun launchTask(block: suspend () -> Unit): Job = viewModelScope.launch {
+        _state.update { it.copy(busy = it.busy + 1, message = null) }
+        try {
+            block()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            if (e.message == "Unauthorized") logout()
+            _state.update { it.copy(message = e.message ?: e.javaClass.simpleName) }
+        } finally {
+            _state.update { it.copy(busy = (it.busy - 1).coerceAtLeast(0)) }
         }
     }
 
@@ -89,6 +138,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun logout() {
         prefs.edit().remove("token").apply()
+        txnJob?.cancel()
         _state.update { UiState(serverUrl = it.serverUrl) }
     }
 
@@ -105,37 +155,129 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun openWallet(wallet: WalletDto?) {
-        _state.update { it.copy(wallet = wallet, tab = WalletTab.TRANSACTIONS, transactions = emptyList(), review = emptyList(), connections = emptyList()) }
+        txnJob?.cancel()
+        _state.update {
+            it.copy(
+                wallet = wallet, tab = WalletTab.TRANSACTIONS, transactions = emptyList(), filter = TxnFilter(), hasMore = false,
+                review = emptyList(), stats = null, statsPeriod = StatsPeriod(), connections = emptyList(), aspsps = emptyList(),
+            )
+        }
         if (wallet != null) refreshWallet()
     }
 
     fun selectTab(tab: WalletTab) {
+        if (tab == _state.value.tab) return
         _state.update { it.copy(tab = tab) }
         refreshWallet()
     }
 
-    fun refreshWallet() {
-        val wallet = _state.value.wallet ?: return
-        launchTask {
+    /** Pull-to-refresh: same as [refreshWallet], but shows the pull indicator until done. */
+    fun pullRefresh() {
+        _state.update { it.copy(refreshing = true) }
+        refreshWallet().invokeOnCompletion { _state.update { it.copy(refreshing = false) } }
+    }
+
+    fun refreshWallet(): Job {
+        val wallet = _state.value.wallet ?: return Job().apply { complete() }
+        return launchTask {
             val categories = api.categories(wallet.id)
-            _state.update { it.copy(categories = categories) }
+            // Always loaded: the Review destination shows its size as a badge.
+            val review = api.review(wallet.id)
+            _state.update { it.copy(categories = categories, review = review) }
             when (_state.value.tab) {
-                WalletTab.TRANSACTIONS -> api.transactions(wallet.id).let { t -> _state.update { it.copy(transactions = t) } }
-                WalletTab.REVIEW -> api.review(wallet.id).let { r -> _state.update { it.copy(review = r) } }
+                WalletTab.TRANSACTIONS -> fetchTransactions(wallet.id, append = false)
+                WalletTab.REVIEW -> Unit
+                WalletTab.STATS -> fetchStats(wallet.id)
                 WalletTab.BANKS -> api.connections(wallet.id).let { c -> _state.update { it.copy(connections = c) } }
             }
         }
     }
 
-    fun setCategory(txn: TransactionDto, categoryId: Long) = launchTask {
-        api.setCategory(txn.id, categoryId)
-        // The server applies the decision to other pending transactions of the same merchant too.
-        _state.value.wallet?.let { w ->
-            val transactions = api.transactions(w.id)
-            val review = api.review(w.id)
-            _state.update { it.copy(transactions = transactions, review = review) }
+    // --- transactions: search, filters, paging ---
+
+    fun setQuery(query: String) {
+        _state.update { it.copy(filter = it.filter.copy(query = query)) }
+        searchInput.value = query
+    }
+
+    fun setFilter(filter: TxnFilter) {
+        _state.update { it.copy(filter = filter) }
+        searchInput.value = filter.query
+        reloadTransactions()
+    }
+
+    private fun reloadTransactions() {
+        val wallet = _state.value.wallet ?: return
+        txnJob?.cancel()
+        txnJob = launchTask { fetchTransactions(wallet.id, append = false) }
+    }
+
+    fun loadMore() {
+        val s = _state.value
+        val wallet = s.wallet ?: return
+        if (!s.hasMore || txnJob?.isActive == true) return
+        _state.update { it.copy(loadingMore = true) }
+        txnJob = launchTask { fetchTransactions(wallet.id, append = true) }.also { job ->
+            job.invokeOnCompletion { _state.update { it.copy(loadingMore = false) } }
         }
     }
+
+    private suspend fun fetchTransactions(walletId: Long, append: Boolean, limit: Int = PAGE_SIZE) {
+        val filter = _state.value.filter
+        val offset = if (append) _state.value.transactions.size else 0
+        val page = api.transactions(walletId, filter, offset, limit)
+        _state.update { s ->
+            if (s.filter != filter) return@update s // a newer filter has taken over
+            s.copy(
+                transactions = if (append) (s.transactions + page).distinctBy { it.id } else page,
+                hasMore = page.size == limit,
+            )
+        }
+    }
+
+    fun setCategory(txn: TransactionDto, categoryId: Long) = launchTask {
+        api.setCategory(txn.id, categoryId)
+        // The server applies the decision to other pending transactions of the same merchant too,
+        // so reload everything currently shown.
+        _state.value.wallet?.let { w ->
+            val review = api.review(w.id)
+            _state.update { it.copy(review = review) }
+            if (_state.value.transactions.isNotEmpty()) {
+                fetchTransactions(w.id, append = false, limit = maxOf(PAGE_SIZE, _state.value.transactions.size))
+            }
+            if (_state.value.stats != null) fetchStats(w.id)
+        }
+    }
+
+    // --- statistics ---
+
+    fun setStatsPeriod(period: StatsPeriod) {
+        _state.update { it.copy(statsPeriod = period) }
+        val wallet = _state.value.wallet ?: return
+        launchTask { fetchStats(wallet.id) }
+    }
+
+    private suspend fun fetchStats(walletId: Long) {
+        val period = _state.value.statsPeriod
+        val stats = api.stats(walletId, period.from, period.to)
+        _state.update { if (it.statsPeriod == period) it.copy(stats = stats) else it }
+    }
+
+    /** Drill-down from a statistics row: that category's transactions over the same period. */
+    fun showCategoryTransactions(categoryId: Long?) {
+        val period = _state.value.statsPeriod
+        _state.update {
+            it.copy(
+                tab = WalletTab.TRANSACTIONS,
+                filter = TxnFilter(categoryId = categoryId, uncategorized = categoryId == null, period = DateRange(period.from, period.to)),
+                transactions = emptyList(),
+            )
+        }
+        searchInput.value = ""
+        reloadTransactions()
+    }
+
+    // --- sharing & banks ---
 
     fun addMember(email: String) {
         val wallet = _state.value.wallet ?: return
@@ -180,3 +322,6 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         refreshWallet()
     }
 }
+
+private const val PAGE_SIZE = 100
+private const val SEARCH_DEBOUNCE_MS = 300L
