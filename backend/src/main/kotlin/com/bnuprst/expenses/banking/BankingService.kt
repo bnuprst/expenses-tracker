@@ -26,6 +26,8 @@ import org.jetbrains.exposed.sql.SortOrder
 import org.jetbrains.exposed.sql.SqlExpressionBuilder.eq
 import org.jetbrains.exposed.sql.and
 import org.jetbrains.exposed.sql.deleteWhere
+import org.jetbrains.exposed.sql.SqlExpressionBuilder.inList
+import org.jetbrains.exposed.sql.SqlExpressionBuilder.isNull
 import org.jetbrains.exposed.sql.insert
 import org.jetbrains.exposed.sql.max
 import org.jetbrains.exposed.sql.selectAll
@@ -60,6 +62,13 @@ class BankingService(
     suspend fun connect(userId: Long, walletId: Long, aspspName: String, country: String): BankAuthResponse {
         wallets.requireRole(userId, walletId)
         val id = dbQuery {
+            // Earlier attempts at this bank that were abandoned or cancelled before authorisation would
+            // otherwise pile up; they never got a session or accounts, so nothing is lost.
+            BankConnections.deleteWhere {
+                (BankConnections.walletId eq walletId) and (BankConnections.aspspName eq aspspName) and
+                    (BankConnections.country eq country.uppercase()) and BankConnections.sessionId.isNull() and
+                    (BankConnections.status inList listOf(ConnectionStatus.PENDING.name, ConnectionStatus.ERROR.name))
+            }
             BankConnections.insert {
                 it[BankConnections.walletId] = walletId
                 it[createdBy] = userId
@@ -82,6 +91,12 @@ class BankingService(
     suspend fun reauthorize(userId: Long, connectionId: Long): BankAuthResponse {
         val row = requireConnection(userId, connectionId)
         return BankAuthResponse(connectionId, startAuth(connectionId, row[BankConnections.aspspName], row[BankConnections.country]))
+    }
+
+    /** Removes the connection with its accounts and sync history; its transactions stay, unlinked from the account. */
+    suspend fun delete(userId: Long, connectionId: Long) {
+        requireConnection(userId, connectionId)
+        dbQuery { BankConnections.deleteWhere { BankConnections.id eq connectionId } }
     }
 
     private suspend fun startAuth(connectionId: Long, aspspName: String, country: String): String {

@@ -260,6 +260,21 @@ private fun BanksTab(state: UiState, vm: AppViewModel) {
 
 @Composable
 private fun ConnectionCard(c: BankConnectionDto, vm: AppViewModel) {
+    var confirmRemove by remember { mutableStateOf(false) }
+    if (confirmRemove) {
+        AlertDialog(
+            onDismissRequest = { confirmRemove = false },
+            confirmButton = { TextButton(onClick = { confirmRemove = false; vm.removeConnection(c) }) { Text("Remove") } },
+            dismissButton = { TextButton(onClick = { confirmRemove = false }) { Text("Cancel") } },
+            title = { Text("Remove ${c.aspspName}?") },
+            text = {
+                Text(
+                    if (c.accounts.isEmpty()) "This connection was never authorised."
+                    else "Syncing stops. Transactions already imported are kept."
+                )
+            },
+        )
+    }
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Text("${c.aspspName} (${c.country})", style = MaterialTheme.typography.titleMedium)
@@ -271,6 +286,7 @@ private fun ConnectionCard(c: BankConnectionDto, vm: AppViewModel) {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 if (c.status == ConnectionStatus.ACTIVE) OutlinedButton(onClick = { vm.sync(c) }) { Text("Sync now") }
                 if (c.renewSoon || c.status != ConnectionStatus.ACTIVE) Button(onClick = { vm.reauthorize(c) }) { Text("Renew consent") }
+                TextButton(onClick = { confirmRemove = true }) { Text("Remove") }
             }
         }
     }
