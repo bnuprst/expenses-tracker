@@ -28,8 +28,10 @@ import org.jetbrains.exposed.sql.and
 import org.jetbrains.exposed.sql.deleteWhere
 import org.jetbrains.exposed.sql.SqlExpressionBuilder.inList
 import org.jetbrains.exposed.sql.SqlExpressionBuilder.isNull
+import org.jetbrains.exposed.sql.SqlExpressionBuilder.lessEq
 import org.jetbrains.exposed.sql.insert
 import org.jetbrains.exposed.sql.max
+import org.jetbrains.exposed.sql.or
 import org.jetbrains.exposed.sql.selectAll
 import org.jetbrains.exposed.sql.update
 import org.slf4j.LoggerFactory
@@ -215,16 +217,23 @@ class BankingService(
         )
     }
 
-    suspend fun syncForUser(userId: Long, connectionId: Long): SyncResultDto {
+    suspend fun syncForUser(userId: Long, connectionId: Long, psu: PsuContext?): SyncResultDto {
         requireConnection(userId, connectionId)
-        return sync(connectionId)
+        return sync(connectionId, psu)
     }
 
-    /** Scheduled entry point: syncs every active connection, expiring those past their consent. */
+    /**
+     * Scheduled entry point: syncs every active connection, expiring those past their consent. Connections whose
+     * bank hit its daily limit on background access are skipped until the pause ends.
+     */
     suspend fun syncAll() {
+        val now = OffsetDateTime.ofInstant(clock(), ZoneOffset.UTC)
         val ids = dbQuery {
             BankConnections.select(BankConnections.id)
-                .where { BankConnections.status eq ConnectionStatus.ACTIVE.name }
+                .where {
+                    (BankConnections.status eq ConnectionStatus.ACTIVE.name) and
+                        (BankConnections.syncPausedUntil.isNull() or (BankConnections.syncPausedUntil lessEq now))
+                }
                 .map { it[BankConnections.id] }
         }
         for (id in ids) {
@@ -232,18 +241,21 @@ class BankingService(
         }
     }
 
-    /** Returns at once if this connection is already syncing (e.g. the initial sync after authorisation). */
-    suspend fun sync(connectionId: Long): SyncResultDto {
+    /**
+     * Returns at once if this connection is already syncing (e.g. the initial sync after authorisation).
+     * [psu] is set when the user started the sync; without it the bank counts it against its daily limit.
+     */
+    suspend fun sync(connectionId: Long, psu: PsuContext? = null): SyncResultDto {
         val lock = locks.computeIfAbsent(connectionId) { Mutex() }
         if (!lock.tryLock()) return SyncResultDto(0, 0, "A sync is already running for this connection")
         try {
-            return syncLocked(connectionId)
+            return syncLocked(connectionId, psu)
         } finally {
             lock.unlock()
         }
     }
 
-    private suspend fun syncLocked(connectionId: Long): SyncResultDto {
+    private suspend fun syncLocked(connectionId: Long, psu: PsuContext?): SyncResultDto {
         val conn = dbQuery { BankConnections.selectAll().where { BankConnections.id eq connectionId }.single() }
         val walletId = conn[BankConnections.walletId]
         if (conn[BankConnections.status] != ConnectionStatus.ACTIVE.name) {
@@ -281,7 +293,7 @@ class BankingService(
                 var maxDate = acc[BankAccounts.lastBookingDate]
                 val seenHashes = mutableMapOf<String, Int>()
                 do {
-                    val page = api.transactions(acc[BankAccounts.externalUid], from, key)
+                    val page = api.transactions(acc[BankAccounts.externalUid], from, key, psu)
                     val mapped = TransactionMapper.map(page.transactions, today, seenHashes)
                     fetched += mapped.size
                     inserted += transactions.importBankTransactions(walletId, acc[BankAccounts.id], mapped, boundary)
@@ -294,6 +306,18 @@ class BankingService(
         } catch (e: EnableBankingException) {
             error = e.message
             if (e.isConsentProblem) setStatus(connectionId, ConnectionStatus.EXPIRED)
+            if (e.isRateLimited) {
+                log.warn("Bank rate limit hit for connection {} ({})", connectionId, if (psu == null) "scheduled" else "user")
+                error = if (psu == null) {
+                    // The limit is per day, so retrying before the next one only fails again. Midnight UTC is
+                    // after midnight in European banks' time zones.
+                    val until = LocalDate.ofInstant(clock(), ZoneOffset.UTC).plusDays(1).atStartOfDay().atOffset(ZoneOffset.UTC)
+                    dbQuery { BankConnections.update({ BankConnections.id eq connectionId }) { it[syncPausedUntil] = until } }
+                    "The bank's daily limit on automatic refreshes was reached; they resume tomorrow. Sync now still works."
+                } else {
+                    "The bank is refusing requests for now (rate limit); try again later."
+                }
+            }
         } catch (e: Exception) {
             log.error("Sync failed for connection {}", connectionId, e)
             error = e.message ?: e.javaClass.simpleName

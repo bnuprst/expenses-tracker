@@ -1,5 +1,6 @@
 package com.bnuprst.expenses
 
+import com.bnuprst.expenses.banking.PsuContext
 import com.bnuprst.expenses.shared.AddMemberRequest
 import com.bnuprst.expenses.shared.CreateBankConnectionRequest
 import com.bnuprst.expenses.shared.CreateRuleRequest
@@ -10,12 +11,14 @@ import com.bnuprst.expenses.shared.LoginRequest
 import com.bnuprst.expenses.shared.RegisterRequest
 import com.bnuprst.expenses.shared.TxnStatus
 import com.bnuprst.expenses.shared.UpdateTransactionRequest
+import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.Application
 import io.ktor.server.application.ApplicationCall
 import io.ktor.server.auth.authenticate
 import io.ktor.server.auth.jwt.JWTPrincipal
 import io.ktor.server.auth.principal
+import io.ktor.server.plugins.origin
 import io.ktor.server.request.receive
 import io.ktor.server.response.respond
 import io.ktor.server.response.respondRedirect
@@ -50,7 +53,8 @@ fun Application.routes(s: Services) = routing {
             val p = call.request.queryParameters
             val (redirect, connectionId) = banking.handleCallback(p["state"], p["code"], p["error"], p["error_description"])
             connectionId?.let { id ->
-                backgroundScope.launch { runCatching { banking.sync(id) }.onFailure { log.error("Initial sync failed", it) } }
+                val psu = call.psu()
+                backgroundScope.launch { runCatching { banking.sync(id, psu) }.onFailure { log.error("Initial sync failed", it) } }
             }
             call.respondRedirect(redirect)
         }
@@ -130,7 +134,7 @@ private fun Route.bankingRoutes(s: Services) {
         }
         post("/{id}/sync") {
             val banking = s.banking ?: throw NotFound("Bank sync is not configured")
-            call.respond(banking.syncForUser(call.userId(), call.longParam("id")))
+            call.respond(banking.syncForUser(call.userId(), call.longParam("id"), call.psu()))
         }
         post("/{id}/reauthorize") {
             val banking = s.banking ?: throw NotFound("Bank sync is not configured")
@@ -151,3 +155,13 @@ private fun ApplicationCall.longParam(name: String): Long =
     parameters[name]?.toLongOrNull() ?: throw BadRequest("Invalid $name")
 
 private fun parseDate(s: String): LocalDate = runCatching { LocalDate.parse(s) }.getOrElse { throw BadRequest("Invalid date: $s") }
+
+/**
+ * The user's address and client for a request they made themselves. Behind the edge proxy the client is the last
+ * X-Forwarded-For entry (the one the proxy added), not the connecting address.
+ */
+private fun ApplicationCall.psu(): PsuContext {
+    val ip = request.headers["X-Forwarded-For"]?.split(',')?.lastOrNull()?.trim()?.takeIf { it.isNotEmpty() }
+        ?: request.origin.remoteAddress
+    return PsuContext(ip, request.headers[HttpHeaders.UserAgent])
+}
