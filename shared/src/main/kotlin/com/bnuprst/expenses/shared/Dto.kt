@@ -94,6 +94,15 @@ data class TransactionDto(
     val categorySource: CategorySource? = null,
     val confidence: Double? = null,
     val status: TxnStatus,
+    /** Purchase date, when the bank reports one apart from [bookingDate]. */
+    val transactionDate: String? = null,
+    val valueDate: String? = null,
+    /** The other party's IBAN: the payer for money in, the payee for money out. */
+    val counterpartyIban: String? = null,
+    /** The bank's transaction type, e.g. "Card payment". */
+    val paymentType: String? = null,
+    /** The wallet's account the transaction belongs to: a bank account, or an imported row's source account. */
+    val account: String? = null,
 )
 
 @Serializable

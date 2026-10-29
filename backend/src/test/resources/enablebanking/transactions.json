@@ -7,6 +7,8 @@
       "status": "BOOK",
       "booking_date": "2026-10-12",
       "value_date": "2026-10-12",
+      "transaction_date": "2026-10-11",
+      "bank_transaction_code": {"description": "Card payment"},
       "creditor": {"name": "K-Market Kamppi"},
       "remittance_information": ["K-MARKET KAMPPI 12.10"]
     },
@@ -17,6 +19,7 @@
       "status": "BOOK",
       "booking_date": "2026-10-15",
       "debtor": {"name": "ACME Oy"},
+      "debtor_account": {"iban": "FI21 1234 5600 0007 85"},
       "remittance_information": ["Salary October"]
     },
     {

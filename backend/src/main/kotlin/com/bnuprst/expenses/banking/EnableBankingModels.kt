@@ -84,6 +84,8 @@ data class EbTransaction(
     @SerialName("transaction_date") val transactionDate: String? = null,
     val creditor: EbParty? = null,
     val debtor: EbParty? = null,
+    @SerialName("creditor_account") val creditorAccount: EbAccountId? = null,
+    @SerialName("debtor_account") val debtorAccount: EbAccountId? = null,
     @SerialName("remittance_information") val remittanceInformation: List<String>? = null,
     @SerialName("bank_transaction_code") val bankTransactionCode: EbBankTxnCode? = null,
     val note: String? = null,

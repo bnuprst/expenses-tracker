@@ -3,6 +3,7 @@ package com.bnuprst.expenses
 import com.bnuprst.expenses.banking.EbAccess
 import com.bnuprst.expenses.banking.EbAccount
 import com.bnuprst.expenses.banking.EbAccountId
+import com.bnuprst.expenses.banking.EbBankTxnCode
 import com.bnuprst.expenses.banking.EbAmount
 import com.bnuprst.expenses.banking.EbAspsp
 import com.bnuprst.expenses.banking.EbAuthRequest
@@ -481,5 +482,46 @@ class IntegrationTest {
         assertAmount("3020.00", stats.months[5].income)
 
         assertEquals(HttpStatusCode.BadRequest, client.get("/api/v1/wallets/${wallet.id}/stats?from=2026-10-31&to=2026-10-01") { bearerAuth(token) }.status)
+    }
+
+    @Test
+    fun `bank details are stored, named by account and backfilled once`() = app { client ->
+        val token = client.register("anna@example.com").token
+        val wallet = client.createWallet(token)
+        llm.fail = true
+        val plain = EbTransaction("R1", null, EbAmount("EUR", "20.00"), "DBIT", "BOOK", "2026-10-03", creditor = EbParty("Lidl"))
+        bank.pages = listOf(plain)
+        val auth: BankAuthResponse = client.post("/api/v1/wallets/${wallet.id}/bank-connections") {
+            bearerAuth(token); json(); setBody(mapOf("aspspName" to "Nordea", "country" to "FI"))
+        }.body()
+        client.get("/api/v1/banking/callback?state=${bank.lastAuth!!.state}&code=abc")
+        client.sync(token, auth.connectionId)
+
+        bank.pages = listOf(
+            plain.copy(transactionDate = "2026-10-01", bankTransactionCode = EbBankTxnCode("Card payment")),
+            EbTransaction(
+                "R2", null, EbAmount("EUR", "1000.00"), "CRDT", "BOOK", "2026-10-02", valueDate = "2026-10-02",
+                debtor = EbParty("ACME"), debtorAccount = EbAccountId(iban = "FI21 1234 5600 0007 85"),
+                bankTransactionCode = EbBankTxnCode("SEPA credit transfer"),
+            ),
+        )
+        client.sync(token, auth.connectionId)
+        suspend fun byRef(): Map<String, TransactionDto> =
+            client.get("/api/v1/wallets/${wallet.id}/transactions") { bearerAuth(token) }.body<List<TransactionDto>>().associateBy { it.amount }
+
+        val txns = byRef()
+        val lidl = txns.getValue("-20.00")
+        assertEquals("2026-10-01", lidl.transactionDate, "backfilled from the re-fetched row")
+        assertEquals("Card payment", lidl.paymentType)
+        val salary = txns.getValue("1000.00")
+        assertEquals("FI2112345600000785", salary.counterpartyIban)
+        assertEquals("2026-10-02", salary.valueDate)
+        assertEquals("SEPA credit transfer", salary.paymentType)
+        assertEquals("Main •••• 0785", salary.account)
+
+        // Rows that already have details keep them.
+        bank.pages = listOf(plain.copy(transactionDate = "2026-09-30", bankTransactionCode = EbBankTxnCode("Other")))
+        client.sync(token, auth.connectionId)
+        assertEquals("Card payment", byRef().getValue("-20.00").paymentType)
     }
 }

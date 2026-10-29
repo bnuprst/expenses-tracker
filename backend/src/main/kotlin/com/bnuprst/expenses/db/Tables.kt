@@ -77,6 +77,10 @@ object Transactions : Table("transactions") {
     val confidence = double("confidence").nullable()
     val status = varchar("status", 16)
     val sourceAccount = text("source_account").nullable()
+    val transactionDate = date("transaction_date").nullable()
+    val valueDate = date("value_date").nullable()
+    val counterpartyIban = text("counterparty_iban").nullable()
+    val paymentType = text("payment_type").nullable()
     override val primaryKey = PrimaryKey(id)
 }
 

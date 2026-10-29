@@ -7,6 +7,7 @@ import com.bnuprst.expenses.categorization.DbCategorizationStore
 import com.bnuprst.expenses.categorization.Normalizer
 import com.bnuprst.expenses.categorization.RuleEngine
 import com.bnuprst.expenses.categorization.TxnInput
+import com.bnuprst.expenses.db.BankAccounts
 import com.bnuprst.expenses.db.Categories
 import com.bnuprst.expenses.db.Rules
 import com.bnuprst.expenses.db.Transactions
@@ -24,6 +25,7 @@ import com.bnuprst.expenses.shared.TransactionDto
 import com.bnuprst.expenses.shared.TxnSort
 import com.bnuprst.expenses.shared.TxnStatus
 import com.bnuprst.expenses.wallets.WalletService
+import org.jetbrains.exposed.sql.JoinType
 import org.jetbrains.exposed.sql.LikePattern
 import org.jetbrains.exposed.sql.Op
 import org.jetbrains.exposed.sql.ResultRow
@@ -74,7 +76,15 @@ data class NewTransaction(
     val currency: String,
     val description: String,
     val counterparty: String?,
-)
+    /** Purchase date, when the bank reports one apart from the booking date. */
+    val transactionDate: LocalDate? = null,
+    val valueDate: LocalDate? = null,
+    val counterpartyIban: String? = null,
+    /** The bank's own transaction type, e.g. "Card payment". */
+    val paymentType: String? = null,
+) {
+    val hasDetails get() = transactionDate != null || valueDate != null || counterpartyIban != null || paymentType != null
+}
 
 class TransactionService(
     private val wallets: WalletService,
@@ -88,7 +98,7 @@ class TransactionService(
     ): List<TransactionDto> {
         wallets.requireRole(userId, walletId)
         return dbQuery {
-            Transactions.selectAll().where {
+            withAccounts().selectAll().where {
                 var cond = Transactions.walletId eq walletId
                 from?.let { cond = cond and (Transactions.bookingDate greaterEq it) }
                 to?.let { cond = cond and (Transactions.bookingDate lessEq it) }
@@ -202,7 +212,7 @@ class TransactionService(
     suspend fun reviewQueue(userId: Long, walletId: Long): List<TransactionDto> {
         wallets.requireRole(userId, walletId)
         return dbQuery {
-            Transactions.selectAll()
+            withAccounts().selectAll()
                 .where {
                     (Transactions.walletId eq walletId) and
                         (Transactions.status inList listOf(TxnStatus.REVIEW.name, TxnStatus.UNCATEGORIZED.name))
@@ -286,6 +296,7 @@ class TransactionService(
                 .where { (Transactions.bankAccountId eq bankAccountId) and (Transactions.externalId inList unique.mapNotNull { it.externalId }) }
                 .mapNotNull { it[Transactions.externalId] }.toSet()
         }
+        backfillDetails(bankAccountId, unique.filter { it.externalId in existing && it.hasDetails })
         // Existing ids first: a bank row stored on an earlier sync must not use up an imported row's match.
         val fresh = unique.filter { it.externalId !in existing }.filterNot { importBoundary?.covers(it) == true }
         val session = categorizer.session(walletId)
@@ -300,6 +311,20 @@ class TransactionService(
             }
         }
         return inserted
+    }
+
+    /** Rows stored before details were kept get them when a sync fetches them again; rows that have details are left alone. */
+    private suspend fun backfillDetails(bankAccountId: Long, items: List<NewTransaction>) {
+        if (items.isEmpty()) return
+        dbQuery {
+            for (t in items) {
+                Transactions.update({
+                    (Transactions.bankAccountId eq bankAccountId) and (Transactions.externalId eq t.externalId) and
+                        Transactions.transactionDate.isNull() and Transactions.valueDate.isNull() and
+                        Transactions.counterpartyIban.isNull() and Transactions.paymentType.isNull()
+                }) { fillDetails(it, t) }
+            }
+        }
     }
 
     /**
@@ -391,6 +416,14 @@ class TransactionService(
         it[Transactions.categorySource] = source?.name
         it[Transactions.confidence] = confidence
         it[Transactions.status] = status.name
+        fillDetails(it, txn)
+    }
+
+    private fun fillDetails(it: org.jetbrains.exposed.sql.statements.UpdateBuilder<*>, txn: NewTransaction) {
+        it[Transactions.transactionDate] = txn.transactionDate
+        it[Transactions.valueDate] = txn.valueDate
+        it[Transactions.counterpartyIban] = txn.counterpartyIban
+        it[Transactions.paymentType] = txn.paymentType
     }
 
     private fun NewTransaction.toInput(merchantKey: String) = TxnInput(description, counterparty, amount, currency, merchantKey)
@@ -403,6 +436,9 @@ class TransactionService(
 }
 
 private const val RETRY_LIMIT = 50
+
+/** Transactions with their bank account, so [toDto] can name the account a row belongs to. */
+private fun withAccounts() = Transactions.join(BankAccounts, JoinType.LEFT, Transactions.bankAccountId, BankAccounts.id)
 private const val TREND_MONTHS = 6
 
 fun ResultRow.toDto() = TransactionDto(
@@ -419,4 +455,11 @@ fun ResultRow.toDto() = TransactionDto(
     categorySource = this[Transactions.categorySource]?.let { CategorySource.valueOf(it) },
     confidence = this[Transactions.confidence],
     status = TxnStatus.valueOf(this[Transactions.status]),
+    transactionDate = this[Transactions.transactionDate]?.toString(),
+    valueDate = this[Transactions.valueDate]?.toString(),
+    counterpartyIban = this[Transactions.counterpartyIban],
+    paymentType = this[Transactions.paymentType],
+    // The bank account when the query joined it (see withAccounts), else the imported row's source account.
+    account = listOfNotNull(getOrNull(BankAccounts.name), getOrNull(BankAccounts.ibanMasked)).joinToString(" ").ifEmpty { null }
+        ?: this[Transactions.sourceAccount],
 )
