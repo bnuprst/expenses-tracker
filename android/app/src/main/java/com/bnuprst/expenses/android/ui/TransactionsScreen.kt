@@ -6,6 +6,8 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -91,6 +93,7 @@ fun TransactionsScreen(state: UiState, vm: AppViewModel, onPick: (TransactionDto
             hasMore = state.hasMore,
             loadingMore = state.loadingMore,
             onLoadMore = vm::loadMore,
+            showDailyMovements = true,
             empty = empty,
             onClick = onPick,
         )
@@ -275,6 +278,7 @@ fun TransactionList(
     hasMore: Boolean = false,
     loadingMore: Boolean = false,
     onLoadMore: () -> Unit = {},
+    showDailyMovements: Boolean = false,
 ) {
     if (items.isEmpty()) {
         empty()
@@ -292,7 +296,18 @@ fun TransactionList(
     LazyColumn(Modifier.fillMaxSize(), state = listState) {
         if (groupByDate) {
             items.groupBy { it.bookingDate }.forEach { (date, dayItems) ->
-                stickyHeader(key = "h-$date") { DayHeader(LocalDate.parse(date)) }
+                val movements = if (showDailyMovements) dailyMovements(dayItems) else emptyList()
+                stickyHeader(key = "h-$date") {
+                    DayHeader(
+                        date = LocalDate.parse(date),
+                        movements = movements,
+                        // Pagination appends at the displayed tail in both date sorts, so the last
+                        // booking date is the potentially incomplete group. `hasMore` is conservative.
+                        partial = showDailyMovements &&
+                            hasMore &&
+                            date == items.lastOrNull()?.bookingDate,
+                    )
+                }
                 items(dayItems, key = { it.id }) { t -> TransactionRow(t, byId, showDate = false, onClick) }
             }
         } else {
@@ -306,13 +321,46 @@ fun TransactionList(
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun DayHeader(date: LocalDate) {
+private fun DayHeader(
+    date: LocalDate,
+    movements: List<DailyMovements> = emptyList(),
+    partial: Boolean = false,
+) {
+    val amountColors = LocalAmountColors.current
     Surface(color = MaterialTheme.colorScheme.surface, modifier = Modifier.fillMaxWidth()) {
-        Text(
-            formatDay(date), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary,
-            modifier = Modifier.padding(start = 16.dp, top = 12.dp, bottom = 4.dp),
-        )
+        Column(Modifier.padding(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 4.dp)) {
+            FlowRow(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                Text(
+                    formatDay(date), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary,
+                )
+                movements.forEach { movement ->
+                    Text(
+                        formatMoney(movement.incoming, movement.currency, showPlus = true),
+                        style = MaterialTheme.typography.labelLarge,
+                        color = if (movement.incoming.signum() > 0) amountColors.income else MaterialTheme.colorScheme.onSurface,
+                    )
+                    Text(
+                        formatMoney(movement.outgoing, movement.currency, showPlus = false),
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.onSurface,
+                    )
+                }
+            }
+            if (partial) {
+                Text(
+                    "Loaded so far",
+                    modifier = Modifier.padding(top = 4.dp),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
     }
 }
 
