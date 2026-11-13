@@ -30,9 +30,9 @@ class WalletService {
     }
 
     suspend fun create(userId: Long, req: CreateWalletRequest): WalletDto {
-        if (req.name.isBlank()) throw BadRequest("Name is required")
+        if (req.name.isBlank()) throw BadRequest("wallet.name_required")
         val currency = req.currency.uppercase()
-        if (currency.length != 3) throw BadRequest("Currency must be an ISO 4217 code")
+        if (currency.length != 3) throw BadRequest("wallet.currency_invalid")
         return dbQuery {
             val id = Wallets.insert {
                 it[name] = req.name.trim()
@@ -43,10 +43,11 @@ class WalletService {
                 it[WalletMembers.userId] = userId
                 it[role] = WalletRole.OWNER.name
             }
-            Categories.batchInsert(DEFAULT_CATEGORIES) { (name, kind) ->
+            Categories.batchInsert(DEFAULT_CATEGORIES) { seed ->
                 this[Categories.walletId] = id
-                this[Categories.name] = name
-                this[Categories.kind] = kind.name
+                this[Categories.name] = seed.name
+                this[Categories.slug] = seed.slug
+                this[Categories.kind] = seed.kind.name
             }
             WalletDto(id, req.name.trim(), currency, WalletRole.OWNER)
         }
@@ -63,13 +64,13 @@ class WalletService {
 
     /** Adds an existing user to the wallet. Only owners may add members. */
     suspend fun addMember(userId: Long, walletId: Long, email: String): MemberDto {
-        if (requireRole(userId, walletId) != WalletRole.OWNER) throw Forbidden("Only wallet owners can add members")
+        if (requireRole(userId, walletId) != WalletRole.OWNER) throw Forbidden("wallet.owner_only_members")
         return dbQuery {
             val user = Users.selectAll().where { Users.email eq email.trim().lowercase() }.singleOrNull()
-                ?: throw NotFound("No user with that email; they need to register first")
+                ?: throw NotFound("wallet.user_not_found")
             val already = WalletMembers.selectAll()
                 .where { (WalletMembers.walletId eq walletId) and (WalletMembers.userId eq user[Users.id]) }.any()
-            if (already) throw Conflict("User is already a member")
+            if (already) throw Conflict("wallet.member_exists")
             WalletMembers.insert {
                 it[WalletMembers.walletId] = walletId
                 it[WalletMembers.userId] = user[Users.id]
@@ -89,37 +90,39 @@ class WalletService {
         WalletMembers.selectAll()
             .where { (WalletMembers.walletId eq walletId) and (WalletMembers.userId eq userId) }
             .singleOrNull()?.let { WalletRole.valueOf(it[WalletMembers.role]) }
-    } ?: throw NotFound("Wallet not found")
+    } ?: throw NotFound("wallet.not_found")
 
     companion object {
         suspend fun categoriesOf(walletId: Long): List<CategoryDto> = dbQuery {
             Categories.selectAll().where { Categories.walletId eq walletId }.orderBy(Categories.name)
-                .map { CategoryDto(it[Categories.id], it[Categories.name], CategoryKind.valueOf(it[Categories.kind]), it[Categories.parentId]) }
+                .map { CategoryDto(it[Categories.id], it[Categories.name], CategoryKind.valueOf(it[Categories.kind]), it[Categories.parentId], it[Categories.slug]) }
         }
 
+        data class SeedCategory(val slug: String, val name: String, val kind: CategoryKind)
+
         val DEFAULT_CATEGORIES = listOf(
-            "Groceries" to CategoryKind.EXPENSE,
-            "Restaurants & Cafes" to CategoryKind.EXPENSE,
-            "Transport" to CategoryKind.EXPENSE,
-            "Fuel" to CategoryKind.EXPENSE,
-            "Housing & Rent" to CategoryKind.EXPENSE,
-            "Utilities" to CategoryKind.EXPENSE,
-            "Phone & Internet" to CategoryKind.EXPENSE,
-            "Health & Pharmacy" to CategoryKind.EXPENSE,
-            "Kids" to CategoryKind.EXPENSE,
-            "Clothing" to CategoryKind.EXPENSE,
-            "Household" to CategoryKind.EXPENSE,
-            "Entertainment" to CategoryKind.EXPENSE,
-            "Subscriptions" to CategoryKind.EXPENSE,
-            "Travel" to CategoryKind.EXPENSE,
-            "Education" to CategoryKind.EXPENSE,
-            "Gifts & Donations" to CategoryKind.EXPENSE,
-            "Insurance" to CategoryKind.EXPENSE,
-            "Taxes & Fees" to CategoryKind.EXPENSE,
-            "Other" to CategoryKind.EXPENSE,
-            "Salary" to CategoryKind.INCOME,
-            "Other Income" to CategoryKind.INCOME,
-            "Transfers" to CategoryKind.TRANSFER,
+            SeedCategory("groceries", "Groceries", CategoryKind.EXPENSE),
+            SeedCategory("restaurants", "Restaurants & Cafes", CategoryKind.EXPENSE),
+            SeedCategory("transport", "Transport", CategoryKind.EXPENSE),
+            SeedCategory("fuel", "Fuel", CategoryKind.EXPENSE),
+            SeedCategory("housing", "Housing & Rent", CategoryKind.EXPENSE),
+            SeedCategory("utilities", "Utilities", CategoryKind.EXPENSE),
+            SeedCategory("phone_internet", "Phone & Internet", CategoryKind.EXPENSE),
+            SeedCategory("health", "Health & Pharmacy", CategoryKind.EXPENSE),
+            SeedCategory("kids", "Kids", CategoryKind.EXPENSE),
+            SeedCategory("clothing", "Clothing", CategoryKind.EXPENSE),
+            SeedCategory("household", "Household", CategoryKind.EXPENSE),
+            SeedCategory("entertainment", "Entertainment", CategoryKind.EXPENSE),
+            SeedCategory("subscriptions", "Subscriptions", CategoryKind.EXPENSE),
+            SeedCategory("travel", "Travel", CategoryKind.EXPENSE),
+            SeedCategory("education", "Education", CategoryKind.EXPENSE),
+            SeedCategory("gifts", "Gifts & Donations", CategoryKind.EXPENSE),
+            SeedCategory("insurance", "Insurance", CategoryKind.EXPENSE),
+            SeedCategory("taxes", "Taxes & Fees", CategoryKind.EXPENSE),
+            SeedCategory("other", "Other", CategoryKind.EXPENSE),
+            SeedCategory("salary", "Salary", CategoryKind.INCOME),
+            SeedCategory("other_income", "Other Income", CategoryKind.INCOME),
+            SeedCategory("transfers", "Transfers", CategoryKind.TRANSFER),
         )
     }
 }

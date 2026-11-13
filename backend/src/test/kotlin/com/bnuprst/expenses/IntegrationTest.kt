@@ -26,6 +26,7 @@ import com.bnuprst.expenses.shared.CategoryDto
 import com.bnuprst.expenses.shared.CategorySource
 import com.bnuprst.expenses.shared.ConnectionStatus
 import com.bnuprst.expenses.shared.CreateTransactionRequest
+import com.bnuprst.expenses.shared.ErrorResponse
 import com.bnuprst.expenses.shared.FinalizeImportResult
 import com.bnuprst.expenses.shared.ImportResult
 import com.bnuprst.expenses.shared.StatsDto
@@ -87,6 +88,8 @@ class FakeBank : EnableBankingApi {
     val psus = mutableListOf<PsuContext?>()
     /** Rejects requests made without the user present, like a bank whose PSD2 daily limit is used up. */
     var unattendedLimitReached = false
+    /** Rejects requests made with the user present, for the manual-sync rate-limit message. */
+    var userLimitReached = false
 
     override suspend fun aspsps(country: String?) = listOf(EbAspsp("Nordea", "FI", maximumConsentValidity = 90L * 86400))
     override suspend fun startAuth(request: EbAuthRequest) = EbAuthResponse("https://bank.example/auth?s=${request.state}").also { lastAuth = request }
@@ -97,7 +100,7 @@ class FakeBank : EnableBankingApi {
         transactionCalls++
         dateFroms += dateFrom
         psus += psu
-        if (unattendedLimitReached && psu == null) {
+        if ((unattendedLimitReached && psu == null) || (userLimitReached && psu != null)) {
             throw EnableBankingException(429, """{"code":429,"message":"Too many requests","error":"ASPSP_RATE_LIMIT_EXCEEDED"}""")
         }
         return EbTransactionsPage(pages)
@@ -523,5 +526,71 @@ class IntegrationTest {
         bank.pages = listOf(plain.copy(transactionDate = "2026-09-30", bankTransactionCode = EbBankTxnCode("Other")))
         client.sync(token, auth.connectionId)
         assertEquals("Card payment", byRef().getValue("-20.00").paymentType)
+    }
+
+    @Test
+    fun `api errors are localized from Accept-Language`() = app { client ->
+        val bad = mapOf("email" to "nobody@example.com", "password" to "wrong-password")
+        suspend fun error(lang: String?): String =
+            client.post("/api/v1/auth/login") {
+                json(); setBody(bad)
+                lang?.let { header(HttpHeaders.AcceptLanguage, it) }
+            }.body<ErrorResponse>().error
+        assertEquals("Invalid email or password", error(null))
+        assertEquals("Invalid email or password", error("de-DE"))
+        assertEquals("Невірна пошта або пароль", error("uk-UA,uk;q=0.9"))
+        assertEquals("Nieprawidłowy e-mail lub hasło", error("en;q=0,pl"))
+    }
+
+    @Test
+    fun `a malformed body answers with a localized generic message`() = app { client ->
+        val r = client.post("/api/v1/auth/login") {
+            json(); header(HttpHeaders.AcceptLanguage, "pl"); setBody("{ not json")
+        }
+        assertEquals(HttpStatusCode.BadRequest, r.status)
+        assertEquals("Nieprawidłowe żądanie", r.body<ErrorResponse>().error)
+    }
+
+    @Test
+    fun `rate-limit sync errors are shown in each reader's language`() = app { client ->
+        val token = client.register("anna@example.com").token
+        val wallet = client.createWallet(token)
+        val auth: BankAuthResponse = client.post("/api/v1/wallets/${wallet.id}/bank-connections") {
+            bearerAuth(token); json(); setBody(mapOf("aspspName" to "Nordea", "country" to "fi"))
+        }.body()
+        client.get("/api/v1/banking/callback?state=${bank.lastAuth!!.state}&code=abc")
+        // The callback starts a background sync; this helper waits until it has finished.
+        client.sync(token, auth.connectionId)
+
+        // A scheduled sync (no PSU context) hits the bank's daily limit and is paused until tomorrow.
+        bank.unattendedLimitReached = true
+        services.banking!!.syncAll()
+        suspend fun lastError(lang: String?): String =
+            client.get("/api/v1/bank-connections?wallet=${wallet.id}") {
+                bearerAuth(token); lang?.let { header(HttpHeaders.AcceptLanguage, it) }
+            }.body<List<BankConnectionDto>>().single().lastSyncError!!
+        assertTrue(lastError(null).contains("daily limit"), lastError(null))
+        assertTrue(lastError("uk").contains("денний ліміт"), lastError("uk"))
+        assertTrue(lastError("pl").contains("dzienny limit"), lastError("pl"))
+
+        // A user-present sync gets the other message, also localized. Each manual request is checked in
+        // its own language; the latest run's persisted error is then read back in all three.
+        bank.userLimitReached = true
+        val manualEn = "The bank is refusing requests for now (rate limit); try again later."
+        val manualUk = "Банк наразі відхиляє запити (ліміт); спробуйте пізніше."
+        val manualPl = "Bank odrzuca teraz żądania (limit); spróbuj później."
+        suspend fun manualError(lang: String?): String? =
+            client.post("/api/v1/bank-connections/${auth.connectionId}/sync") {
+                bearerAuth(token); lang?.let { header(HttpHeaders.AcceptLanguage, it) }
+            }.body<SyncResultDto>().error
+        assertEquals(manualEn, manualError(null))
+        assertEquals(manualUk, manualError("uk"))
+        assertEquals(manualPl, manualError("pl"))
+
+        // The manual run is now the latest one, so its error key is rendered per reader too. Assert the
+        // exact sentences rather than a substring: "limit" alone would also match the English fallback.
+        assertEquals(manualEn, lastError(null))
+        assertEquals(manualUk, lastError("uk"))
+        assertEquals(manualPl, lastError("pl"))
     }
 }

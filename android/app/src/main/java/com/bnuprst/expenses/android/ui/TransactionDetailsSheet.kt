@@ -21,8 +21,10 @@ import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import com.bnuprst.expenses.android.R
 import com.bnuprst.expenses.shared.CategoryDto
 import com.bnuprst.expenses.shared.CategorySource
 import com.bnuprst.expenses.shared.TransactionDto
@@ -30,17 +32,21 @@ import com.bnuprst.expenses.shared.TxnStatus
 import java.time.LocalDate
 
 /** "From ACME Oy" for money in, "To K-Market" for money out; null when the bank named no one. */
-fun TransactionDto.partyLabel(): String? = counterparty?.let { if (isIncoming()) "From $it" else "To $it" }
+@Composable
+fun TransactionDto.partyLabel(): String? = counterparty?.let {
+    if (isIncoming()) stringResource(R.string.party_from, it) else stringResource(R.string.party_to, it)
+}
 
 fun TransactionDto.isIncoming() = (amount.toBigDecimalOrNull()?.signum() ?: 0) > 0
 
 private fun formatIban(iban: String) = iban.chunked(4).joinToString(" ")
 
-private fun CategorySource.label(confidence: Double?) = when (this) {
-    CategorySource.MANUAL -> "Set by you"
-    CategorySource.MEMORY -> "Learned from earlier choices for this merchant"
-    CategorySource.RULE -> "Matched a rule"
-    CategorySource.LLM -> "Suggested by AI" + (confidence?.let { " (${(it * 100).toInt()}% sure)" } ?: "")
+@Composable
+private fun CategorySource.label(confidence: Double?): String = when (this) {
+    CategorySource.MANUAL -> stringResource(R.string.source_manual)
+    CategorySource.MEMORY -> stringResource(R.string.source_memory)
+    CategorySource.RULE -> stringResource(R.string.source_rule)
+    CategorySource.LLM -> confidence?.let { stringResource(R.string.source_llm_confidence, (it * 100).toInt()) } ?: stringResource(R.string.source_llm)
 }
 
 /**
@@ -57,12 +63,13 @@ fun TransactionDetailsSheet(
     onChangeCategory: () -> Unit,
 ) {
     val category = txn.categoryId?.let { id -> categories.firstOrNull { it.id == id } }
+    val categoryName = category?.let { categoryDisplayName(it) }
     val booked = LocalDate.parse(txn.bookingDate)
     val incoming = txn.isIncoming()
     ModalBottomSheet(onDismissRequest = onDismiss, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
         Column(Modifier.verticalScroll(rememberScrollState()).padding(start = 24.dp, end = 24.dp, bottom = 24.dp)) {
             Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                CategoryAvatar(category?.name ?: txn.counterparty ?: txn.description, if (category != null) categoryColor(category.id) else MaterialTheme.colorScheme.outline, 56.dp)
+                CategoryAvatar(categoryName ?: txn.counterparty ?: txn.description, if (category != null) categoryColor(category.id) else MaterialTheme.colorScheme.outline, 56.dp)
                 Text(
                     formatMoney(txn.amount, txn.currency, showPlus = true),
                     style = MaterialTheme.typography.headlineMedium,
@@ -70,7 +77,7 @@ fun TransactionDetailsSheet(
                 )
                 Text(txn.counterparty ?: txn.description, style = MaterialTheme.typography.titleMedium, textAlign = TextAlign.Center)
                 Text(
-                    if (incoming) "Money in" else "Money out",
+                    stringResource(if (incoming) R.string.money_in else R.string.money_out),
                     style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
@@ -80,20 +87,23 @@ fun TransactionDetailsSheet(
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     // Name and IBAN are independently optional; show whichever the bank sent.
                     listOfNotNull(txn.counterparty, txn.counterpartyIban?.let(::formatIban)).takeIf { it.isNotEmpty() }?.let { party ->
-                        Detail(if (incoming) "From" else "To", party.joinToString("\n"))
+                        Detail(stringResource(if (incoming) R.string.detail_from else R.string.detail_to), party.joinToString("\n"))
                     }
-                    if (txn.description != txn.counterparty) Detail("Description", txn.description)
-                    txn.paymentType?.let { Detail("Type", it) }
-                    txn.transactionDate?.let(LocalDate::parse)?.takeIf { it != booked }?.let { Detail("Purchased", formatDay(it)) }
-                    Detail("Booked", formatDay(booked))
-                    txn.valueDate?.let(LocalDate::parse)?.takeIf { it != booked }?.let { Detail("Value date", formatDay(it)) }
-                    txn.account?.let { Detail("Account", it) }
+                    if (txn.description != txn.counterparty) Detail(stringResource(R.string.detail_description), txn.description)
+                    txn.paymentType?.let { Detail(stringResource(R.string.detail_type), it) }
+                    txn.transactionDate?.let(LocalDate::parse)?.takeIf { it != booked }?.let { Detail(stringResource(R.string.detail_purchased), formatDay(it)) }
+                    Detail(stringResource(R.string.detail_booked), formatDay(booked))
+                    txn.valueDate?.let(LocalDate::parse)?.takeIf { it != booked }?.let { Detail(stringResource(R.string.detail_value_date), formatDay(it)) }
+                    txn.account?.let { Detail(stringResource(R.string.detail_account), it) }
                     Detail(
-                        "Category",
+                        stringResource(R.string.detail_category),
                         when (txn.status) {
-                            TxnStatus.UNCATEGORIZED -> "Uncategorized"
-                            TxnStatus.REVIEW -> "${category?.name ?: "?"} (suggested, not confirmed)"
-                            TxnStatus.CATEGORIZED -> category?.name ?: "Uncategorized"
+                            TxnStatus.UNCATEGORIZED -> stringResource(R.string.category_uncategorized)
+                            TxnStatus.REVIEW -> stringResource(
+                                R.string.category_suggested_unconfirmed,
+                                category?.let { categoryDisplayName(it) } ?: stringResource(R.string.label_unknown),
+                            )
+                            TxnStatus.CATEGORIZED -> categoryName ?: stringResource(R.string.category_uncategorized)
                         } + (txn.categorySource?.let { "\n" + it.label(txn.confidence) } ?: ""),
                     )
                 }
@@ -101,11 +111,11 @@ fun TransactionDetailsSheet(
 
             Column(Modifier.fillMaxWidth().padding(top = 24.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 if (txn.status == TxnStatus.REVIEW && category != null) {
-                    Button(onClick = { onConfirm(category.id) }, modifier = Modifier.fillMaxWidth()) { Text("Confirm ${category.name}") }
-                    OutlinedButton(onClick = onChangeCategory, modifier = Modifier.fillMaxWidth()) { Text("Choose another category") }
+                    Button(onClick = { onConfirm(category.id) }, modifier = Modifier.fillMaxWidth()) { Text(stringResource(R.string.action_confirm_category, categoryDisplayName(category))) }
+                    OutlinedButton(onClick = onChangeCategory, modifier = Modifier.fillMaxWidth()) { Text(stringResource(R.string.action_choose_another_category)) }
                 } else {
                     FilledTonalButton(onClick = onChangeCategory, modifier = Modifier.fillMaxWidth()) {
-                        Text(if (txn.status == TxnStatus.UNCATEGORIZED) "Choose category" else "Change category")
+                        Text(stringResource(if (txn.status == TxnStatus.UNCATEGORIZED) R.string.action_choose_category else R.string.action_change_category))
                     }
                 }
             }

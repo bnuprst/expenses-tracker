@@ -37,6 +37,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -54,6 +55,7 @@ fun LoginScreen(state: UiState, vm: AppViewModel) {
     var name by rememberSaveable { mutableStateOf("") }
     var register by rememberSaveable { mutableStateOf(false) }
     var showPassword by rememberSaveable { mutableStateOf(false) }
+    var language by rememberSaveable { mutableStateOf(false) }
     val canSubmit = !state.loading && email.isNotBlank() && password.isNotBlank() && (!register || name.isNotBlank())
     val submit = { if (canSubmit) vm.authenticate(server, email, password, name, register) }
 
@@ -67,36 +69,36 @@ fun LoginScreen(state: UiState, vm: AppViewModel) {
             Surface(shape = RoundedCornerShape(24.dp), color = MaterialTheme.colorScheme.primaryContainer) {
                 Icon(painterResource(R.drawable.ic_wallet), null, Modifier.padding(20.dp).size(40.dp), tint = MaterialTheme.colorScheme.onPrimaryContainer)
             }
-            Text(if (register) "Create account" else "Welcome back", style = MaterialTheme.typography.headlineMedium)
+            Text(stringResource(if (register) R.string.login_title_create else R.string.login_title_welcome), style = MaterialTheme.typography.headlineMedium)
             Text(
-                if (register) "Track family spending together" else "Sign in to your expenses server",
+                stringResource(if (register) R.string.login_subtitle_create else R.string.login_subtitle_signin),
                 style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             Spacer(Modifier.height(8.dp))
             val fieldModifier = Modifier.fillMaxWidth().widthIn(max = 480.dp)
             OutlinedTextField(
-                server, { server = it }, label = { Text("Server URL") }, singleLine = true, modifier = fieldModifier,
+                server, { server = it }, label = { Text(stringResource(R.string.field_server_url)) }, singleLine = true, modifier = fieldModifier,
                 leadingIcon = { Icon(painterResource(R.drawable.ic_account_balance), null) },
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Next),
             )
             if (register) OutlinedTextField(
-                name, { name = it }, label = { Text("Name") }, singleLine = true, modifier = fieldModifier,
+                name, { name = it }, label = { Text(stringResource(R.string.field_name)) }, singleLine = true, modifier = fieldModifier,
                 leadingIcon = { Icon(Icons.Default.Person, null) },
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
             )
             OutlinedTextField(
-                email, { email = it }, label = { Text("Email") }, singleLine = true, modifier = fieldModifier,
+                email, { email = it }, label = { Text(stringResource(R.string.field_email)) }, singleLine = true, modifier = fieldModifier,
                 leadingIcon = { Icon(Icons.Default.Email, null) },
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email, imeAction = ImeAction.Next),
             )
             OutlinedTextField(
-                password, { password = it }, label = { Text("Password") }, singleLine = true, modifier = fieldModifier,
+                password, { password = it }, label = { Text(stringResource(R.string.field_password)) }, singleLine = true, modifier = fieldModifier,
                 leadingIcon = { Icon(Icons.Default.Lock, null) },
                 trailingIcon = {
                     IconButton(onClick = { showPassword = !showPassword }) {
                         Icon(
                             painterResource(if (showPassword) R.drawable.ic_visibility_off else R.drawable.ic_visibility),
-                            if (showPassword) "Hide password" else "Show password",
+                            stringResource(if (showPassword) R.string.action_hide_password else R.string.action_show_password),
                         )
                     }
                 },
@@ -106,9 +108,11 @@ fun LoginScreen(state: UiState, vm: AppViewModel) {
             )
             Spacer(Modifier.height(4.dp))
             Button(onClick = submit, enabled = canSubmit, modifier = fieldModifier.height(48.dp)) {
-                Text(if (register) "Create account" else "Sign in")
+                Text(stringResource(if (register) R.string.login_title_create else R.string.action_sign_in))
             }
-            TextButton(onClick = { register = !register }) { Text(if (register) "Have an account? Sign in" else "New here? Create an account") }
+            TextButton(onClick = { register = !register }) { Text(stringResource(if (register) R.string.login_switch_to_signin else R.string.login_switch_to_register)) }
+            TextButton(onClick = { language = true }) { Text(stringResource(R.string.action_language)) }
+            if (language) LanguageDialog { language = false }
         }
     }
 }

@@ -1,5 +1,6 @@
 package com.bnuprst.expenses.android.ui
 
+import androidx.annotation.StringRes
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -44,16 +45,20 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.painter.Painter
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import com.bnuprst.expenses.android.R
 import com.bnuprst.expenses.shared.CategoryDto
 import com.bnuprst.expenses.shared.CategoryKind
 import java.math.BigDecimal
 import java.text.NumberFormat
 import java.time.LocalDate
 import java.time.format.DateTimeFormatter
+import java.time.format.FormatStyle
 import java.util.Currency
+import java.util.Locale
 
 val LocalSnackbar = staticCompositionLocalOf<SnackbarHostState> { error("No SnackbarHostState provided") }
 
@@ -67,22 +72,82 @@ fun formatMoney(amount: BigDecimal, currency: String, showPlus: Boolean = false)
 fun formatMoney(amount: String, currency: String, showPlus: Boolean = false): String =
     amount.toBigDecimalOrNull()?.let { formatMoney(it, currency, showPlus) } ?: "$amount $currency"
 
-private val dayFormat = DateTimeFormatter.ofPattern("EEE, d MMM")
-private val dayYearFormat = DateTimeFormatter.ofPattern("EEE, d MMM yyyy")
+internal fun dayFormat(): DateTimeFormatter = DateTimeFormatter.ofPattern("EEE, d MMM", Locale.getDefault())
+internal fun dayYearFormat(): DateTimeFormatter = DateTimeFormatter.ofPattern("EEE, d MMM yyyy", Locale.getDefault())
 
+internal fun dateTimeFormat(): DateTimeFormatter =
+    DateTimeFormatter.ofLocalizedDateTime(FormatStyle.MEDIUM, FormatStyle.SHORT)
+        .withLocale(Locale.getDefault())
+
+/** An ISO-8601 instant from the API, rendered in the device timezone and UI locale; the raw text if unparseable. */
+fun formatDateTime(iso: String): String = runCatching {
+    java.time.Instant.parse(iso)
+        .atZone(java.time.ZoneId.systemDefault())
+        .format(dateTimeFormat())
+}.recoverCatching {
+    // tolerate a zone-less local date-time, should the API ever drop the offset
+    java.time.LocalDateTime.parse(iso)
+        .atZone(java.time.ZoneId.systemDefault())
+        .format(dateTimeFormat())
+}.getOrDefault(iso)
+
+@Composable
 fun formatDay(date: LocalDate, today: LocalDate = LocalDate.now()): String = when (date) {
-    today -> "Today"
-    today.minusDays(1) -> "Yesterday"
-    else -> date.format(if (date.year == today.year) dayFormat else dayYearFormat)
+    today -> stringResource(R.string.label_today)
+    today.minusDays(1) -> stringResource(R.string.label_yesterday)
+    else -> date.format(if (date.year == today.year) dayFormat() else dayYearFormat())
 }
 
 /** A stable color per category, so the same category looks the same across lists. */
 fun categoryColor(id: Long?): Color = id?.let { CategoryPalette[(it % CategoryPalette.size).toInt()] } ?: Color.Gray
 
+/** Seeded categories carry a stable slug; their names are shown in the UI language. Names the user
+ *  created (slug == null) are shown exactly as typed, even when they read like a default name. */
+private val SEEDED_CATEGORY_NAMES: Map<String, Int> = mapOf(
+    "groceries" to R.string.cat_groceries,
+    "restaurants" to R.string.cat_restaurants,
+    "transport" to R.string.cat_transport,
+    "fuel" to R.string.cat_fuel,
+    "housing" to R.string.cat_housing,
+    "utilities" to R.string.cat_utilities,
+    "phone_internet" to R.string.cat_phone_internet,
+    "health" to R.string.cat_health,
+    "kids" to R.string.cat_kids,
+    "clothing" to R.string.cat_clothing,
+    "household" to R.string.cat_household,
+    "entertainment" to R.string.cat_entertainment,
+    "subscriptions" to R.string.cat_subscriptions,
+    "travel" to R.string.cat_travel,
+    "education" to R.string.cat_education,
+    "gifts" to R.string.cat_gifts,
+    "insurance" to R.string.cat_insurance,
+    "taxes" to R.string.cat_taxes,
+    "other" to R.string.cat_other,
+    "salary" to R.string.cat_salary,
+    "other_income" to R.string.cat_other_income,
+    "transfers" to R.string.cat_transfers,
+)
+
+@StringRes
+internal fun seededCategoryNameRes(slug: String?): Int? = slug?.let { SEEDED_CATEGORY_NAMES[it] }
+
+@Composable
+fun categoryDisplayName(name: String, slug: String?): String =
+    seededCategoryNameRes(slug)?.let { stringResource(it) } ?: name
+
+@Composable
+fun categoryDisplayName(category: CategoryDto): String = categoryDisplayName(category.name, category.slug)
+
+/** Search must match what the user sees, so filtering runs over display names. Extracted for tests. */
+fun filterCategories(categories: List<CategoryDto>, query: String, display: (CategoryDto) -> String): List<CategoryDto> {
+    val q = query.trim()
+    return if (q.isBlank()) categories else categories.filter { display(it).contains(q, ignoreCase = true) }
+}
+
 @Composable
 fun CategoryAvatar(name: String, color: Color, size: Dp = 40.dp) {
     Box(Modifier.size(size).background(color.copy(alpha = 0.18f), CircleShape), contentAlignment = Alignment.Center) {
-        Text(name.firstOrNull { it.isLetterOrDigit() }?.uppercase() ?: "?", color = color, style = MaterialTheme.typography.titleMedium)
+        Text(name.firstOrNull { it.isLetterOrDigit() }?.uppercase() ?: stringResource(R.string.label_unknown), color = color, style = MaterialTheme.typography.titleMedium)
     }
 }
 
@@ -118,7 +183,7 @@ fun SearchField(value: String, onValueChange: (String) -> Unit, placeholder: Str
         modifier = modifier.fillMaxWidth(),
         placeholder = { Text(placeholder) },
         leadingIcon = { Icon(Icons.Default.Search, null) },
-        trailingIcon = { if (value.isNotEmpty()) IconButton(onClick = { onValueChange("") }) { Icon(Icons.Default.Clear, "Clear search") } },
+        trailingIcon = { if (value.isNotEmpty()) IconButton(onClick = { onValueChange("") }) { Icon(Icons.Default.Clear, stringResource(R.string.action_clear_search)) } },
         singleLine = true,
         shape = CircleShape,
         colors = TextFieldDefaults.colors(
@@ -155,20 +220,21 @@ fun CategoryPickerSheet(
 ) {
     var query by rememberSaveable { mutableStateOf("") }
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-    val matching = categories.filter { query.isBlank() || it.name.contains(query.trim(), ignoreCase = true) }
+    val display = categories.associateWith { categoryDisplayName(it) }
+    val matching = filterCategories(categories, query) { display.getValue(it) }
     ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState) {
         Column(Modifier.padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Text(title, style = MaterialTheme.typography.titleLarge, maxLines = 2)
             subtitle?.let { Text(it, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant) }
-            SearchField(query, { query = it }, "Search categories", Modifier.padding(vertical = 8.dp))
+            SearchField(query, { query = it }, stringResource(R.string.search_categories), Modifier.padding(vertical = 8.dp))
         }
         LazyColumn(contentPadding = PaddingValues(bottom = 24.dp)) {
             if (forFilter && query.isBlank()) {
                 item(key = "any") {
-                    PickerRow("All categories", null, selected = selectedId == null && !uncategorizedSelected) { onPick(CategoryChoice.Any) }
+                    PickerRow(stringResource(R.string.filter_all_categories), null, selected = selectedId == null && !uncategorizedSelected) { onPick(CategoryChoice.Any) }
                 }
                 item(key = "none") {
-                    PickerRow("Uncategorized", Color.Gray, selected = uncategorizedSelected) { onPick(CategoryChoice.Uncategorized) }
+                    PickerRow(stringResource(R.string.category_uncategorized), Color.Gray, selected = uncategorizedSelected) { onPick(CategoryChoice.Uncategorized) }
                 }
             }
             CategoryKind.entries.forEach { kind ->
@@ -176,12 +242,12 @@ fun CategoryPickerSheet(
                 if (group.isEmpty()) return@forEach
                 item(key = "h-$kind") {
                     Text(
-                        kind.label(), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary,
+                        stringResource(kind.labelRes), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary,
                         modifier = Modifier.padding(start = 16.dp, top = 16.dp, bottom = 4.dp),
                     )
                 }
                 items(group, key = { it.id }) { c ->
-                    PickerRow(c.name, categoryColor(c.id), selected = c.id == selectedId) { onPick(CategoryChoice.Category(c)) }
+                    PickerRow(display.getValue(c), categoryColor(c.id), selected = c.id == selectedId) { onPick(CategoryChoice.Category(c)) }
                 }
             }
         }
@@ -193,14 +259,15 @@ private fun PickerRow(name: String, color: Color?, selected: Boolean, onClick: (
     ListItem(
         headlineContent = { Text(name) },
         leadingContent = color?.let { { CategoryAvatar(name, it, 36.dp) } },
-        trailingContent = if (selected) ({ Icon(Icons.Default.Check, "Selected", tint = MaterialTheme.colorScheme.primary) }) else null,
+        trailingContent = if (selected) ({ Icon(Icons.Default.Check, stringResource(R.string.action_selected), tint = MaterialTheme.colorScheme.primary) }) else null,
         colors = ListItemDefaults.colors(containerColor = Color.Transparent),
         modifier = Modifier.clickable(onClick = onClick),
     )
 }
 
-fun CategoryKind.label() = when (this) {
-    CategoryKind.EXPENSE -> "Expenses"
-    CategoryKind.INCOME -> "Income"
-    CategoryKind.TRANSFER -> "Transfers"
-}
+val CategoryKind.labelRes: Int
+    @StringRes get() = when (this) {
+        CategoryKind.EXPENSE -> R.string.kind_expenses
+        CategoryKind.INCOME -> R.string.kind_income
+        CategoryKind.TRANSFER -> R.string.kind_transfers
+    }

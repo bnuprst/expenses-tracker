@@ -1,3 +1,215 @@
 <resources>
     <string name="app_name">Expenses</string>
+
+    <!-- login -->
+    <string name="login_title_create">Create account</string>
+    <string name="login_title_welcome">Welcome back</string>
+    <string name="login_subtitle_create">Track family spending together</string>
+    <string name="login_subtitle_signin">Sign in to your expenses server</string>
+    <string name="field_server_url">Server URL</string>
+    <string name="field_name">Name</string>
+    <string name="field_email">Email</string>
+    <string name="field_password">Password</string>
+    <string name="action_show_password">Show password</string>
+    <string name="action_hide_password">Hide password</string>
+    <string name="action_sign_in">Sign in</string>
+    <string name="login_switch_to_signin">Have an account? Sign in</string>
+    <string name="login_switch_to_register">New here? Create an account</string>
+
+    <!-- language -->
+    <string name="action_language">Language</string>
+    <string name="language_system">System default</string>
+    <string name="language_en">English</string>
+    <string name="language_uk">Українська</string>
+    <string name="language_pl">Polski</string>
+
+    <!-- wallets -->
+    <string name="wallets_greeting">Hi, %1$s</string>
+    <string name="wallets_title">Wallets</string>
+    <string name="action_refresh">Refresh</string>
+    <string name="action_more">More</string>
+    <string name="action_sign_out">Sign out</string>
+    <string name="wallets_new">New wallet</string>
+    <string name="wallets_empty_title">No wallets yet</string>
+    <string name="wallets_empty_body">Create a wallet for your household, then connect a bank or add family members.</string>
+    <string name="wallets_section">Your wallets</string>
+    <string name="role_owner">Owner</string>
+    <string name="role_member">Member</string>
+    <string name="wallet_subtitle">%1$s · %2$s</string>
+    <string name="field_currency">Currency</string>
+    <string name="action_create">Create</string>
+    <string name="action_cancel">Cancel</string>
+
+    <!-- wallet tabs -->
+    <string name="tab_transactions">Transactions</string>
+    <string name="tab_review">Review</string>
+    <string name="tab_stats">Stats</string>
+    <string name="tab_banks">Banks</string>
+    <string name="action_all_wallets">All wallets</string>
+
+    <!-- shared components -->
+    <string name="label_today">Today</string>
+    <string name="label_yesterday">Yesterday</string>
+    <string name="label_unknown">?</string>
+    <string name="label_loading">Loading…</string>
+    <string name="action_clear_search">Clear search</string>
+    <string name="search_categories">Search categories</string>
+    <string name="filter_all_categories">All categories</string>
+    <string name="category_uncategorized">Uncategorized</string>
+    <string name="action_selected">Selected</string>
+    <string name="kind_expenses">Expenses</string>
+    <string name="kind_income">Income</string>
+    <string name="kind_transfers">Transfers</string>
+    <string name="dot_separator">%1$s · %2$s</string>
+
+    <!-- banks -->
+    <string name="banks_connected_title">Connected banks</string>
+    <string name="banks_none_connected">No banks connected yet.</string>
+    <string name="banks_connect_title">Connect a bank</string>
+    <string name="field_country">Country</string>
+    <string name="action_find_banks">Find banks</string>
+    <string name="banks_share_title">Share wallet</string>
+    <string name="banks_share_body">Add a family member who already has an account on this server.</string>
+    <string name="action_add">Add</string>
+    <string name="action_remove">Remove</string>
+    <string name="banks_remove_title">Remove %1$s?</string>
+    <string name="banks_remove_never_authorised">This connection was never authorised.</string>
+    <string name="banks_remove_body">Syncing stops. Transactions already imported are kept.</string>
+    <string name="banks_account_fallback">Account</string>
+    <string name="banks_last_sync">Last sync %1$s</string>
+    <string name="banks_country_consent">%1$s · consent until %2$s</string>
+    <string name="banks_renew_warning">Consent expires soon; renew to keep syncing</string>
+    <string name="action_sync_now">Sync now</string>
+    <string name="action_renew_consent">Renew consent</string>
+    <string name="status_active">Active</string>
+    <string name="status_pending">Pending</string>
+    <string name="status_expired">Expired</string>
+    <string name="status_error">Error</string>
+
+    <!-- transactions -->
+    <string name="search_transactions">Search transactions</string>
+    <string name="txn_empty_filtered_title">No matching transactions</string>
+    <string name="txn_empty_filtered_body">Try another search or clear the filters.</string>
+    <string name="txn_empty_title">No transactions yet</string>
+    <string name="txn_empty_body">Connect a bank in the Banks tab to start syncing.</string>
+    <string name="review_hint">Confirm suggested categories or pick one. Your choice also applies to other transactions from the same merchant.</string>
+    <string name="review_empty_title">All caught up</string>
+    <string name="review_empty_body">Nothing needs your review.</string>
+    <string name="period_this_month">This month</string>
+    <string name="period_last_month">Last month</string>
+    <string name="period_last_3_months">Last 3 months</string>
+    <string name="period_this_year">This year</string>
+    <string name="sort_newest">Newest first</string>
+    <string name="sort_oldest">Oldest first</string>
+    <string name="sort_largest_expense">Largest expense</string>
+    <string name="sort_largest_income">Largest income</string>
+    <string name="filter_category">Category</string>
+    <string name="filter_any_time">Any time</string>
+    <string name="filter_custom_range">Custom range…</string>
+    <string name="action_clear">Clear</string>
+    <string name="filter_by_category">Filter by category</string>
+    <string name="action_apply">Apply</string>
+    <string name="date_picker_title">Select dates</string>
+    <string name="day_partial">Loaded so far</string>
+    <string name="txn_suggested">Suggested: %1$s · tap to confirm</string>
+    <string name="txn_uncategorized_tap">Uncategorized · tap to choose</string>
+
+    <!-- transaction details -->
+    <string name="party_from">From %1$s</string>
+    <string name="party_to">To %1$s</string>
+    <string name="money_in">Money in</string>
+    <string name="money_out">Money out</string>
+    <string name="detail_from">From</string>
+    <string name="detail_to">To</string>
+    <string name="detail_description">Description</string>
+    <string name="detail_type">Type</string>
+    <string name="detail_purchased">Purchased</string>
+    <string name="detail_booked">Booked</string>
+    <string name="detail_value_date">Value date</string>
+    <string name="detail_account">Account</string>
+    <string name="detail_category">Category</string>
+    <string name="source_manual">Set by you</string>
+    <string name="source_memory">Learned from earlier choices for this merchant</string>
+    <string name="source_rule">Matched a rule</string>
+    <string name="source_llm">Suggested by AI</string>
+    <string name="source_llm_confidence">Suggested by AI (%1$d%% sure)</string>
+    <string name="category_suggested_unconfirmed">%1$s (suggested, not confirmed)</string>
+    <string name="action_confirm_category">Confirm %1$s</string>
+    <string name="action_choose_another_category">Choose another category</string>
+    <string name="action_choose_category">Choose category</string>
+    <string name="action_change_category">Change category</string>
+
+    <!-- stats -->
+    <string name="stats_failed_title">Couldn\'t load statistics</string>
+    <string name="stats_failed_body">Pull down to try again.</string>
+    <string name="stats_spending">Spending</string>
+    <string name="stats_income">Income</string>
+    <string name="stats_no_spending">No spending in this period</string>
+    <string name="stats_no_income">No income in this period</string>
+    <string name="granularity_month">Month</string>
+    <string name="granularity_year">Year</string>
+    <string name="action_previous">Previous</string>
+    <string name="action_next">Next</string>
+    <string name="stats_spent">Spent</string>
+    <string name="stats_earned">Earned</string>
+    <string name="stats_net">Net</string>
+    <string name="stats_share_line">%1$s%% · %2$s</string>
+    <string name="stats_trend_title">Last 6 months</string>
+
+    <!-- viewmodel messages -->
+    <string name="msg_https_required">The server URL must start with https://</string>
+    <string name="msg_member_added">%1$s added to %2$s</string>
+    <string name="msg_sync_result">Fetched %1$d, new %2$d</string>
+    <string name="msg_connection_removed">Removed %1$s</string>
+    <string name="msg_bank_connected">Bank connected; first sync is running</string>
+    <string name="msg_bank_failed">Bank connection failed: %1$s</string>
+    <string name="msg_unknown_error">unknown error</string>
+    <string name="msg_bank_state_unknown">Bank authorisation link expired; try connecting again</string>
+    <string name="msg_bank_cancelled">Bank authorisation cancelled</string>
+    <string name="msg_bank_session_failed">Could not complete bank authorisation</string>
+
+    <!-- default (seeded) category names, keyed by CategoryDto.slug -->
+    <string name="cat_groceries">Groceries</string>
+    <string name="cat_restaurants">Restaurants &amp; Cafes</string>
+    <string name="cat_transport">Transport</string>
+    <string name="cat_fuel">Fuel</string>
+    <string name="cat_housing">Housing &amp; Rent</string>
+    <string name="cat_utilities">Utilities</string>
+    <string name="cat_phone_internet">Phone &amp; Internet</string>
+    <string name="cat_health">Health &amp; Pharmacy</string>
+    <string name="cat_kids">Kids</string>
+    <string name="cat_clothing">Clothing</string>
+    <string name="cat_household">Household</string>
+    <string name="cat_entertainment">Entertainment</string>
+    <string name="cat_subscriptions">Subscriptions</string>
+    <string name="cat_travel">Travel</string>
+    <string name="cat_education">Education</string>
+    <string name="cat_gifts">Gifts &amp; Donations</string>
+    <string name="cat_insurance">Insurance</string>
+    <string name="cat_taxes">Taxes &amp; Fees</string>
+    <string name="cat_other">Other</string>
+    <string name="cat_salary">Salary</string>
+    <string name="cat_other_income">Other Income</string>
+    <string name="cat_transfers">Transfers</string>
+
+    <plurals name="banks_search_hint">
+        <item quantity="one">Search %1$d bank</item>
+        <item quantity="other">Search %1$d banks</item>
+    </plurals>
+    <plurals name="banks_consent_days">
+        <item quantity="one">Consent up to %1$d day</item>
+        <item quantity="other">Consent up to %1$d days</item>
+    </plurals>
+    <plurals name="stats_other_currency">
+        <item quantity="one">%1$d transaction in another currency is not included.</item>
+        <item quantity="other">%1$d transactions in other currencies are not included.</item>
+    </plurals>
+    <plurals name="stats_categories_count">
+        <item quantity="one">%1$d category</item>
+        <item quantity="other">%1$d categories</item>
+    </plurals>
+    <plurals name="stats_transactions_count">
+        <item quantity="one">%1$d transaction</item>
+        <item quantity="other">%1$d transactions</item>
+    </plurals>
 </resources>

@@ -56,7 +56,7 @@ data class MemberDto(val userId: Long, val email: String, val name: String, val 
 // --- categories & rules ---
 
 @Serializable
-data class CategoryDto(val id: Long, val name: String, val kind: CategoryKind, val parentId: Long? = null)
+data class CategoryDto(val id: Long, val name: String, val kind: CategoryKind, val parentId: Long? = null, val slug: String? = null)
 
 @Serializable
 data class RuleDto(

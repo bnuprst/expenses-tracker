@@ -19,7 +19,9 @@ import com.bnuprst.expenses.shared.UpdateTransactionRequest
 import com.bnuprst.expenses.shared.WalletDto
 import io.ktor.client.HttpClient
 import io.ktor.client.call.body
+import io.ktor.client.engine.HttpClientEngine
 import io.ktor.client.engine.okhttp.OkHttp
+import io.ktor.client.plugins.DefaultRequest
 import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.client.plugins.timeout
@@ -34,20 +36,28 @@ import io.ktor.client.request.setBody
 import io.ktor.client.statement.HttpResponse
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.ContentType
+import io.ktor.http.HttpHeaders
 import io.ktor.http.contentType
 import io.ktor.http.isSuccess
 import io.ktor.serialization.kotlinx.json.json
 import kotlinx.serialization.json.Json
 import java.time.LocalDate
 
-class ApiException(message: String) : Exception(message)
+class ApiException(val status: Int, message: String) : Exception(message)
 
-class Api(private val baseUrl: () -> String, private val token: () -> String?) {
+class Api(
+    private val baseUrl: () -> String,
+    private val token: () -> String?,
+    private val language: () -> String,
+    engine: HttpClientEngine = OkHttp.create(),
+) {
     private val json = Json { ignoreUnknownKeys = true; explicitNulls = false }
-    private val http = HttpClient(OkHttp) {
+    private val http = HttpClient(engine) {
         expectSuccess = false
         install(ContentNegotiation) { json(json) }
         install(HttpTimeout)
+        // Read per request: on API 33+ the app language can change under us.
+        install(DefaultRequest) { headers.append(HttpHeaders.AcceptLanguage, language()) }
     }
 
     private fun url(path: String) = baseUrl().trimEnd('/') + "/api/v1" + path
@@ -65,7 +75,7 @@ class Api(private val baseUrl: () -> String, private val token: () -> String?) {
         if (!status.isSuccess()) {
             val text = bodyAsText()
             val msg = runCatching { json.decodeFromString<ErrorResponse>(text).error }.getOrNull()
-            throw ApiException(msg ?: "HTTP ${status.value}")
+            throw ApiException(status.value, msg ?: "HTTP ${status.value}")
         }
         return body()
     }

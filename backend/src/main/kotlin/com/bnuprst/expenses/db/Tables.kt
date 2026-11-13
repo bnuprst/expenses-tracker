@@ -30,6 +30,7 @@ object Categories : Table("categories") {
     val id = long("id").autoIncrement()
     val walletId = long("wallet_id").references(Wallets.id)
     val name = text("name")
+    val slug = text("slug").nullable()
     val kind = varchar("kind", 16)
     val parentId = long("parent_id").nullable()
     override val primaryKey = PrimaryKey(id)
@@ -112,5 +113,6 @@ object SyncRuns : Table("sync_runs") {
     val fetched = integer("fetched")
     val inserted = integer("inserted")
     val error = text("error").nullable()
+    val errorKey = text("error_key").nullable()
     override val primaryKey = PrimaryKey(id)
 }

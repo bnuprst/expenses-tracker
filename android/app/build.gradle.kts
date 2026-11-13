@@ -17,6 +17,7 @@ android {
         targetSdk = 35
         versionCode = 1
         versionName = "0.1.0"
+        resourceConfigurations += listOf("en", "uk", "pl")
     }
 
     buildTypes {
@@ -37,6 +38,20 @@ android {
 
     packaging {
         resources.excludes += setOf("META-INF/INDEX.LIST", "META-INF/io.netty.versions.properties")
+    }
+
+    testOptions {
+        unitTests.isIncludeAndroidResources = true
+    }
+
+    lint {
+        abortOnError = true
+        warningsAsErrors = false
+        error += setOf(
+            "MissingTranslation", "ExtraTranslation", "MissingQuantity",
+            "StringFormatInvalid", "StringFormatCount", "StringFormatMatches",
+            "UnusedQuantity", "ImpliedQuantity", "Typos",
+        )
     }
 }
 
@@ -63,4 +78,10 @@ dependencies {
     implementation("io.ktor:ktor-client-okhttp:3.1.3")
     implementation("io.ktor:ktor-client-content-negotiation:3.1.3")
     implementation("io.ktor:ktor-serialization-kotlinx-json:3.1.3")
+
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("androidx.test:core:1.6.1")
+    testImplementation("org.robolectric:robolectric:4.14.1")
+    testImplementation("io.ktor:ktor-client-mock:3.1.3")
+    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.10.2")
 }

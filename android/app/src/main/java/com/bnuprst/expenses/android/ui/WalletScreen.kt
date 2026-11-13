@@ -26,17 +26,18 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.res.stringResource
 import com.bnuprst.expenses.android.AppViewModel
 import com.bnuprst.expenses.android.R
 import com.bnuprst.expenses.android.UiState
 import com.bnuprst.expenses.android.WalletTab
 import com.bnuprst.expenses.shared.TransactionDto
 
-private val WalletTab.label get() = when (this) {
-    WalletTab.TRANSACTIONS -> "Transactions"
-    WalletTab.REVIEW -> "Review"
-    WalletTab.STATS -> "Stats"
-    WalletTab.BANKS -> "Banks"
+private val WalletTab.labelRes get() = when (this) {
+    WalletTab.TRANSACTIONS -> R.string.tab_transactions
+    WalletTab.REVIEW -> R.string.tab_review
+    WalletTab.STATS -> R.string.tab_stats
+    WalletTab.BANKS -> R.string.tab_banks
 }
 
 private val WalletTab.icon get() = when (this) {
@@ -61,10 +62,10 @@ fun WalletScreen(state: UiState, vm: AppViewModel) {
                     title = {
                         Column {
                             Text(wallet.name, style = MaterialTheme.typography.titleLarge)
-                            Text(state.tab.label, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text(stringResource(state.tab.labelRes), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                     },
-                    navigationIcon = { IconButton(onClick = { vm.openWallet(null) }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "All wallets") } },
+                    navigationIcon = { IconButton(onClick = { vm.openWallet(null) }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, stringResource(R.string.action_all_wallets)) } },
                 )
                 TopProgress(state.loading && !state.refreshing && !state.loadingMore)
             }
@@ -83,7 +84,7 @@ fun WalletScreen(state: UiState, vm: AppViewModel) {
                                 Icon(painterResource(tab.icon), null)
                             }
                         },
-                        label = { Text(tab.label) },
+                        label = { Text(stringResource(tab.labelRes)) },
                     )
                 }
             }
@@ -110,7 +111,7 @@ fun WalletScreen(state: UiState, vm: AppViewModel) {
     picking?.let { txn ->
         CategoryPickerSheet(
             title = txn.counterparty ?: txn.description,
-            subtitle = "${formatMoney(txn.amount, txn.currency)} · ${formatDay(java.time.LocalDate.parse(txn.bookingDate))}",
+            subtitle = stringResource(R.string.dot_separator, formatMoney(txn.amount, txn.currency), formatDay(java.time.LocalDate.parse(txn.bookingDate))),
             categories = state.categories,
             selectedId = txn.categoryId,
             onDismiss = { picking = null },
