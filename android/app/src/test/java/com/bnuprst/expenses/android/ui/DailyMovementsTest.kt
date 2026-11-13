@@ -210,6 +210,24 @@ class DailyMovementsTest {
     }
 
     @Test
+    fun `sums converted EUR and native PLN rows into one PLN total`() {
+        val totals = dailyTotals(
+            listOf(
+                transaction(1, "-10.00", currency = "EUR", baseAmount = "-43.000000", baseCurrency = "PLN"),
+                transaction(2, "-5.00", currency = "PLN"),
+            ),
+            emptyMap(),
+            "PLN",
+        )
+        val base = totals.baseOrFail()
+        assertEquals("PLN", base.currency)
+        assertAmount("0", base.incoming)
+        assertAmount("-48.00", base.outgoing)
+        assertTrue(base.converted)
+        assertTrue("no EUR bucket: ${totals.unconverted}", totals.unconverted.isEmpty())
+    }
+
+    @Test
     fun `keeps a row with no rate in its own currency bucket`() {
         val totals = dailyTotals(
             listOf(

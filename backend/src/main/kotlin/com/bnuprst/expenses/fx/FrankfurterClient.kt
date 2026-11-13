@@ -7,12 +7,13 @@ import io.ktor.client.statement.bodyAsText
 import io.ktor.http.isSuccess
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonPrimitive
 import java.time.LocalDate
 
 @Serializable
 internal data class FrankfurterRange(
     val base: String = "",
-    val rates: Map<String, Map<String, String>> = emptyMap(),
+    val rates: Map<String, Map<String, JsonPrimitive>> = emptyMap(),
 )
 
 /**
@@ -48,8 +49,10 @@ class FrankfurterClient(private val http: HttpClient, private val config: FxConf
                 throw FxUnavailable("FX provider sent an invalid rate date '$date' for $url", e)
             }
             val values = quotes.map { (currency, value) ->
-                val rate = value.toBigDecimalOrNull() ?: throw FxUnavailable(
-                    "FX provider sent an unparseable rate '$value' for $currency on $asOf for $url",
+                // The raw content keeps the provider's literal decimal text, so a value never
+                // round-trips through Double; quoted rates and numeric rates are both supported.
+                val rate = value.content.toBigDecimalOrNull() ?: throw FxUnavailable(
+                    "FX provider sent an unparseable rate '${value.content}' for $currency on $asOf for $url",
                 )
                 currency.uppercase() to rate
             }.toMap()

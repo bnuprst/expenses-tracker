@@ -771,6 +771,33 @@ class IntegrationTest {
     }
 
     @Test
+    fun `eur transactions convert into the PLN wallet currency at the publication date`() = app { client ->
+        val token = client.register("anna@example.com").token
+        val wallet = client.createWallet(token, "PLN")
+        fxProvider.days = listOf(FxDay(LocalDate.parse("2026-10-09"), "EUR", mapOf("PLN" to BigDecimal("4.30"))))
+        client.txn(token, wallet.id, "2026-10-09", "-10.00", "Lidl Europe", currency = "EUR")
+        client.txn(token, wallet.id, "2026-10-11", "-20.00", "Weekend Shop", currency = "EUR")
+        client.txn(token, wallet.id, "2026-10-09", "-5.00", "Lidl Polska")
+
+        val rows = client.get("/api/v1/wallets/${wallet.id}/transactions") { bearerAuth(token) }.body<List<TransactionDto>>()
+        val friday = rows.single { it.currency == "EUR" && it.amount == "-10.00" }
+        assertEquals("-10.00", friday.amount, "the original EUR amount is preserved")
+        assertEquals("PLN", friday.baseCurrency)
+        assertAmount("-43.000000", friday.baseAmount!!)
+        assertEquals("2026-10-09", friday.baseRateDate)
+
+        val weekend = rows.single { it.currency == "EUR" && it.amount == "-20.00" }
+        assertEquals("PLN", weekend.baseCurrency)
+        assertAmount("-86.000000", weekend.baseAmount!!)
+        assertEquals("2026-10-09", weekend.baseRateDate, "a weekend booking uses Friday's publication")
+
+        val native = rows.single { it.currency == "PLN" }
+        assertEquals("PLN", native.baseCurrency)
+        assertEquals(native.amount, native.baseAmount)
+        assertEquals(1, fxProvider.calls.size, "the transaction list fetches coverage once")
+    }
+
+    @Test
     fun `a currency with no rate at all stays unconverted`() = app { client ->
         val token = client.register("anna@example.com").token
         val wallet = client.createWallet(token)
