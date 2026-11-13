@@ -9,6 +9,7 @@ data class AppConfig(
     val jwt: JwtConfig,
     val enableBanking: EnableBankingConfig?,
     val llm: LlmConfig,
+    val fx: FxConfig,
 ) {
     companion object {
         /**
@@ -60,6 +61,15 @@ data class AppConfig(
                     temperature = opt("LLM_TEMPERATURE")?.toDouble(),
                     reasoningEffort = opt("LLM_REASONING_EFFORT"),
                 ),
+                fx = FxConfig(
+                    enabled = get("FX_ENABLED", "true").toBoolean(),
+                    apiBase = get("FX_API_BASE", "https://api.frankfurter.dev/v1").trimEnd('/'),
+                    base = get("FX_BASE", "EUR").uppercase(),
+                    refreshInterval = Duration.parse(get("FX_REFRESH_INTERVAL", "PT12H")),
+                    maxStaleDays = get("FX_MAX_STALE_DAYS", "7").toLong(),
+                    backfillDays = get("FX_BACKFILL_DAYS", "400").toLong(),
+                    provisionalDays = get("FX_PROVISIONAL_DAYS", "5").toLong(),
+                ),
             )
         }
     }
@@ -95,4 +105,21 @@ data class LlmConfig(
     val temperature: Double? = null,
     /** OpenAI reasoning models: none/minimal/low/medium/high. Sent only when set. */
     val reasoningEffort: String? = null,
+)
+
+data class FxConfig(
+    val enabled: Boolean,
+    val apiBase: String,
+    /** The provider's base currency; rates are stored against it and cross rates derived from it. */
+    val base: String,
+    val refreshInterval: Duration,
+    /** How far back a lookup may reach for the last published rate (weekends, holidays). */
+    val maxStaleDays: Long,
+    /** How much history to fetch the first time, and the cap on any single catch-up fetch. */
+    val backfillDays: Long,
+    /**
+     * Recent days with no publication yet are provisional and refetched (not more often than
+     * [refreshInterval]); older unpublished days are final.
+     */
+    val provisionalDays: Long,
 )

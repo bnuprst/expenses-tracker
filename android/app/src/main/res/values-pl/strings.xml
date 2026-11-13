@@ -38,7 +38,7 @@
     <string name="action_cancel">Anuluj</string>
 
     <string name="tab_transactions">Transakcje</string>
-    <string name="tab_review">Do sprawdzenia</string>
+    <string name="tab_review">Sprawdź</string>
     <string name="tab_stats">Statystyki</string>
     <string name="tab_banks">Banki</string>
     <string name="action_all_wallets">Wszystkie portfele</string>
@@ -69,6 +69,7 @@
     <string name="banks_remove_title">Usunąć %1$s?</string>
     <string name="banks_remove_never_authorised">To połączenie nigdy nie zostało autoryzowane.</string>
     <string name="banks_remove_body">Synchronizacja zostanie zatrzymana. Zaimportowane transakcje pozostaną.</string>
+    <string name="banks_accounts_title">Rachunki</string>
     <string name="banks_account_fallback">Konto</string>
     <string name="banks_last_sync">Ostatnia synchronizacja %1$s</string>
     <string name="banks_country_consent">%1$s · zgoda do %2$s</string>
@@ -104,6 +105,7 @@
     <string name="action_apply">Zastosuj</string>
     <string name="date_picker_title">Wybierz daty</string>
     <string name="day_partial">Wczytane do tej pory</string>
+    <string name="day_unconverted">Nie przeliczono: brak kursu</string>
     <string name="txn_suggested">Sugestia: %1$s · dotknij, aby potwierdzić</string>
     <string name="txn_uncategorized_tap">Bez kategorii · dotknij, aby wybrać</string>
 
@@ -198,6 +200,12 @@
         <item quantity="few">%1$d transakcje w innych walutach nie są uwzględnione.</item>
         <item quantity="many">%1$d transakcji w innych walutach nie jest uwzględnionych.</item>
         <item quantity="other">%1$d transakcji w innych walutach nie jest uwzględnionych.</item>
+    </plurals>
+    <plurals name="day_transfers_excluded">
+        <item quantity="one">%1$d przelew między Twoimi kontami nie jest uwzględniony.</item>
+        <item quantity="few">%1$d przelewy między Twoimi kontami nie są uwzględnione.</item>
+        <item quantity="many">%1$d przelewów między Twoimi kontami nie jest uwzględnionych.</item>
+        <item quantity="other">%1$d przelewów między Twoimi kontami nie jest uwzględnionych.</item>
     </plurals>
     <plurals name="stats_categories_count">
         <item quantity="one">%1$d kategoria</item>

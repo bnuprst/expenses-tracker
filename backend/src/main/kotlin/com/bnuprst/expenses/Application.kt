@@ -12,9 +12,15 @@ import com.bnuprst.expenses.categorization.llm.LlmProvider
 import com.bnuprst.expenses.categorization.llm.OpenAiCompatibleProvider
 import com.bnuprst.expenses.config.AppConfig
 import com.bnuprst.expenses.db.Db
+import com.bnuprst.expenses.fx.FrankfurterClient
+import com.bnuprst.expenses.fx.FxProvider
+import com.bnuprst.expenses.fx.FxService
 import com.bnuprst.expenses.i18n.Messages
 import com.bnuprst.expenses.shared.ErrorResponse
+import com.bnuprst.expenses.transactions.ImportService
 import com.bnuprst.expenses.transactions.TransactionService
+import com.bnuprst.expenses.transactions.TransferScanService
+import com.bnuprst.expenses.transactions.WalletLocks
 import com.bnuprst.expenses.wallets.WalletService
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO
@@ -44,16 +50,27 @@ import kotlinx.serialization.json.Json
 import org.slf4j.LoggerFactory
 import org.slf4j.event.Level
 
+import java.time.Clock
+import java.time.Instant
+
 class Services(
     val jwt: JwtService,
     val auth: AuthService,
     val wallets: WalletService,
     val transactions: TransactionService,
-    val imports: com.bnuprst.expenses.transactions.ImportService,
+    val imports: ImportService,
     val banking: BankingService?,
+    val fx: FxService,
+    val transfers: TransferScanService,
 )
 
-fun buildServices(config: AppConfig, llmProvider: LlmProvider? = null, bankingApi: com.bnuprst.expenses.banking.EnableBankingApi? = null): Services {
+fun buildServices(
+    config: AppConfig,
+    llmProvider: LlmProvider? = null,
+    bankingApi: com.bnuprst.expenses.banking.EnableBankingApi? = null,
+    fxProvider: FxProvider? = null,
+    clock: Clock = Clock.systemUTC(),
+): Services {
     val jwt = JwtService(config.jwt)
     val wallets = WalletService()
     val provider = llmProvider ?: if (config.llm.enabled) {
@@ -65,12 +82,20 @@ fun buildServices(config: AppConfig, llmProvider: LlmProvider? = null, bankingAp
         )
     }
     val categorizer = Categorizer(DbCategorizationStore(), provider?.let(::LlmCategorizer), config.llm.confidenceThreshold)
-    val transactions = TransactionService(wallets, categorizer)
+    val fxClient = if (config.fx.enabled) {
+        fxProvider ?: FrankfurterClient(HttpClient(CIO) { install(HttpTimeout) }, config.fx)
+    } else null
+    val fx = FxService(fxClient, config.fx, clock)
+    val walletLocks = WalletLocks()
+    val scans = TransferScanService(fx, walletLocks)
+    val transactions = TransactionService(wallets, categorizer, fx, walletLocks)
+    val imports = ImportService(wallets, scans)
     val banking = config.enableBanking?.let { eb ->
         val api = bankingApi ?: EnableBankingClient(HttpClient(CIO) { install(HttpTimeout) { requestTimeoutMillis = 60_000 } }, eb)
-        BankingService(api, eb, wallets, transactions)
+        BankingService(api, eb, wallets, transactions, scans, clock = { Instant.now(clock) })
     }
-    return Services(jwt, AuthService(jwt), wallets, transactions, com.bnuprst.expenses.transactions.ImportService(wallets), banking)
+    fx.onRatesStored = { dates -> scans.rescanForRates(dates) }
+    return Services(jwt, AuthService(jwt), wallets, transactions, imports, banking, fx, scans)
 }
 
 fun main() {
@@ -80,6 +105,13 @@ fun main() {
     embeddedServer(Netty, port = config.port, host = "0.0.0.0") {
         module(services)
         startSyncScheduler(config, services)
+        val fxJob = services.fx.startScheduler(this)
+        monitor.subscribe(ApplicationStopping) { fxJob.cancel() }
+        launch {
+            delay(30_000)
+            runCatching { services.transfers.scanAll() }
+                .onFailure { LoggerFactory.getLogger("TransferScan").error("Startup transfer scan failed", it) }
+        }
     }.start(wait = true)
 }
 

@@ -103,6 +103,17 @@ data class TransactionDto(
     val paymentType: String? = null,
     /** The wallet's account the transaction belongs to: a bank account, or an imported row's source account. */
     val account: String? = null,
+    /**
+     * [amount] converted into the wallet currency at the rate for [bookingDate]; null when no rate is
+     * known, and null for every row when FX is disabled — including rows already in the wallet currency.
+     */
+    val baseAmount: String? = null,
+    /** The wallet currency [baseAmount] is expressed in; set whenever conversion was attempted. */
+    val baseCurrency: String? = null,
+    /** The date of the FX rate used (may be earlier than bookingDate: ECB publishes on business days). */
+    val baseRateDate: String? = null,
+    /** Set when this row was matched to its opposite leg in another of the user's own accounts. */
+    val transferGroup: String? = null,
 )
 
 @Serializable
@@ -144,7 +155,12 @@ data class StatsDto(
     val totalIncome: String,
     /** The six calendar months ending with the month of `to`. */
     val months: List<MonthTotalDto>,
-    /** Transactions in other currencies, left out of the totals (there is no FX conversion). */
+    /**
+     * Transactions in a currency other than [currency], left out of the totals: stats totals are still
+     * wallet-currency-only and are not FX-converted (only the app's daily totals are). Internal
+     * transfers — a TRANSFER-kind category or a detected own-account pair — are not counted here,
+     * because they are not expenses at all.
+     */
     val otherCurrencyCount: Int,
 )
 

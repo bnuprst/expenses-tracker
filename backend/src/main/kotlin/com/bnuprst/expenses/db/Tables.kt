@@ -82,6 +82,8 @@ object Transactions : Table("transactions") {
     val valueDate = date("value_date").nullable()
     val counterpartyIban = text("counterparty_iban").nullable()
     val paymentType = text("payment_type").nullable()
+    val transferGroup = text("transfer_group").nullable()
+    val transferOverride = bool("transfer_override").default(false)
     override val primaryKey = PrimaryKey(id)
 }
 
@@ -103,6 +105,23 @@ object Rules : Table("rules") {
     val value = text("value")
     val categoryId = long("category_id")
     override val primaryKey = PrimaryKey(id)
+}
+
+object FxRates : Table("fx_rates") {
+    val asOf = date("as_of")
+    val base = varchar("base", 3)
+    val quote = varchar("quote", 3)
+    val rate = decimal("rate", 24, 12)
+    val rateSource = text("source")
+    override val primaryKey = PrimaryKey(asOf, base, quote)
+}
+
+object FxCoverage : Table("fx_coverage") {
+    val base = varchar("base", 3)
+    val asOf = date("as_of")
+    val published = bool("published")
+    val fetchedAt = timestampWithTimeZone("fetched_at")
+    override val primaryKey = PrimaryKey(base, asOf)
 }
 
 object SyncRuns : Table("sync_runs") {

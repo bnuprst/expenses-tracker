@@ -1,9 +1,14 @@
 package com.bnuprst.expenses.android.ui
 
+import com.bnuprst.expenses.shared.CategoryDto
+import com.bnuprst.expenses.shared.CategoryKind
 import com.bnuprst.expenses.shared.TransactionDto
 import com.bnuprst.expenses.shared.TxnStatus
 import java.math.BigDecimal
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class DailyMovementsTest {
@@ -14,6 +19,9 @@ class DailyMovementsTest {
         currency: String = "PLN",
         status: TxnStatus = TxnStatus.CATEGORIZED,
         categoryId: Long? = null,
+        baseAmount: String? = null,
+        baseCurrency: String? = null,
+        transferGroup: String? = null,
     ): TransactionDto = TransactionDto(
         id = id,
         walletId = 1L,
@@ -24,10 +32,21 @@ class DailyMovementsTest {
         merchantKey = "test",
         categoryId = categoryId,
         status = status,
+        baseAmount = baseAmount,
+        baseCurrency = baseCurrency,
+        transferGroup = transferGroup,
     )
+
+    private fun categories(vararg pairs: Pair<Long, CategoryKind>): Map<Long, CategoryDto> =
+        pairs.associate { (id, kind) -> id to CategoryDto(id, "category-$id", kind) }
 
     private fun assertAmount(expected: String, actual: BigDecimal) {
         assertEquals(0, BigDecimal(expected).compareTo(actual))
+    }
+
+    private fun DailyTotals.baseOrFail(): DailyMovements {
+        assertNotNull("expected a base bucket", base)
+        return base!!
     }
 
     @Test
@@ -38,68 +57,81 @@ class DailyMovementsTest {
             transaction(3, "-500"),
             transaction(4, "-53.70"),
         )
-        val result = dailyMovements(items).single()
-        assertAmount("15000", result.incoming)
-        assertAmount("-553.70", result.outgoing)
+        val base = dailyTotals(items, emptyMap(), "PLN").baseOrFail()
+        assertEquals("PLN", base.currency)
+        assertAmount("15000", base.incoming)
+        assertAmount("-553.70", base.outgoing)
+        assertEquals(false, base.converted)
     }
 
     @Test
     fun `adds decimals exactly`() {
-        val result = dailyMovements(listOf(transaction(1, "0.10"), transaction(2, "0.20"))).single()
-        assertAmount("0.30", result.incoming)
-        assertAmount("0", result.outgoing)
+        val base = dailyTotals(listOf(transaction(1, "0.10"), transaction(2, "0.20")), emptyMap(), "PLN").baseOrFail()
+        assertAmount("0.30", base.incoming)
+        assertAmount("0", base.outgoing)
     }
 
     @Test
     fun `fills the missing direction with zero`() {
-        val incomingOnly = dailyMovements(listOf(transaction(1, "5.00"))).single()
+        val incomingOnly = dailyTotals(listOf(transaction(1, "5.00")), emptyMap(), "PLN").baseOrFail()
         assertAmount("5.00", incomingOnly.incoming)
         assertAmount("0", incomingOnly.outgoing)
 
-        val outgoingOnly = dailyMovements(listOf(transaction(1, "-5.00"))).single()
+        val outgoingOnly = dailyTotals(listOf(transaction(1, "-5.00")), emptyMap(), "PLN").baseOrFail()
         assertAmount("0", outgoingOnly.incoming)
         assertAmount("-5.00", outgoingOnly.outgoing)
     }
 
     @Test
     fun `keeps a zero-only currency with two zeros`() {
-        val items = listOf(transaction(1, "0"), transaction(2, "0.00"), transaction(3, "-0.00"))
-        val result = dailyMovements(items)
-        assertEquals(1, result.size)
-        assertAmount("0", result.single().incoming)
-        assertAmount("0", result.single().outgoing)
+        val totals = dailyTotals(
+            listOf(transaction(1, "0"), transaction(2, "0.00"), transaction(3, "-0.00")),
+            emptyMap(),
+            "PLN",
+        )
+        val base = totals.baseOrFail()
+        assertAmount("0", base.incoming)
+        assertAmount("0", base.outgoing)
+        assertTrue(totals.unconverted.isEmpty())
     }
 
     @Test
     fun `returns empty for empty input`() {
-        assertEquals(emptyList<DailyMovements>(), dailyMovements(emptyList()))
+        val totals = dailyTotals(emptyList(), emptyMap(), "PLN")
+        assertNull(totals.base)
+        assertEquals(emptyList<DailyMovements>(), totals.unconverted)
+        assertEquals(0, totals.excludedTransfers)
     }
 
     @Test
     fun `ignores invalid amounts without throwing`() {
         val items = listOf(transaction(1, ""), transaction(2, "not-a-number"), transaction(3, "2.50"))
-        val result = dailyMovements(items)
-        assertEquals(1, result.size)
-        assertAmount("2.50", result.single().incoming)
-        assertAmount("0", result.single().outgoing)
+        val base = dailyTotals(items, emptyMap(), "PLN").baseOrFail()
+        assertAmount("2.50", base.incoming)
+        assertAmount("0", base.outgoing)
     }
 
     @Test
     fun `omits invalid-only currencies and empty invalid input`() {
-        val withValid = dailyMovements(
+        val withValid = dailyTotals(
             listOf(transaction(1, "10", currency = "PLN"), transaction(2, "not-a-number", currency = "USD")),
+            emptyMap(),
+            "PLN",
         )
-        assertEquals(listOf("PLN"), withValid.map { it.currency })
-        assertAmount("10", withValid.single().incoming)
+        assertAmount("10", withValid.baseOrFail().incoming)
+        assertTrue(withValid.unconverted.isEmpty())
 
-        val allInvalid = dailyMovements(
+        val allInvalid = dailyTotals(
             listOf(transaction(1, "bad", currency = "PLN"), transaction(2, "", currency = "USD")),
+            emptyMap(),
+            "PLN",
         )
-        assertEquals(emptyList<DailyMovements>(), allInvalid)
+        assertNull(allInvalid.base)
+        assertEquals(emptyList<DailyMovements>(), allInvalid.unconverted)
     }
 
     @Test
-    fun `orders currencies ascending`() {
+    fun `orders unconverted currencies ascending`() {
         val items = listOf(
             transaction(1, "10", currency = "PLN"),
             transaction(2, "5", currency = "USD"),
@@ -108,9 +140,9 @@ class DailyMovementsTest {
             transaction(5, "-1", currency = "USD"),
             transaction(6, "4", currency = "EUR"),
         )
-        val result = dailyMovements(items)
-        assertEquals(listOf("EUR", "PLN", "USD"), result.map { it.currency })
-        val byCurrency = result.associateBy { it.currency }
+        val totals = dailyTotals(items, emptyMap(), baseCurrency = null)
+        assertEquals(listOf("EUR", "PLN", "USD"), totals.unconverted.map { it.currency })
+        val byCurrency = totals.unconverted.associateBy { it.currency }
         assertAmount("4", byCurrency.getValue("EUR").incoming)
         assertAmount("-3", byCurrency.getValue("EUR").outgoing)
         assertAmount("10", byCurrency.getValue("PLN").incoming)
@@ -122,56 +154,176 @@ class DailyMovementsTest {
     @Test
     fun `includes every status`() {
         for (status in TxnStatus.entries) {
-            val result = dailyMovements(
+            val base = dailyTotals(
                 listOf(transaction(1, "7.00", status = status), transaction(2, "-2.00", status = status)),
-            ).single()
-            assertAmount("7.00", result.incoming)
-            assertAmount("-2.00", result.outgoing)
+                emptyMap(),
+                "PLN",
+            ).baseOrFail()
+            assertAmount("7.00", base.incoming)
+            assertAmount("-2.00", base.outgoing)
         }
     }
 
     @Test
-    fun `counts transfers and uncategorized rows by sign only`() {
-        val result = dailyMovements(
+    fun `excludes rows in a transfer group`() {
+        val totals = dailyTotals(
             listOf(
-                transaction(1, "15.00", categoryId = 42L), // referencing a transfer category ID
-                transaction(2, "-3.00", categoryId = null), // uncategorized
+                transaction(1, "-100.00", transferGroup = "g1"),
+                transaction(2, "-3.00"),
             ),
-        ).single()
-        assertAmount("15.00", result.incoming)
-        assertAmount("-3.00", result.outgoing)
+            emptyMap(),
+            "PLN",
+        )
+        assertEquals(1, totals.excludedTransfers)
+        assertAmount("-3.00", totals.baseOrFail().outgoing)
+    }
+
+    @Test
+    fun `excludes rows in a TRANSFER-kind category`() {
+        val totals = dailyTotals(
+            listOf(
+                transaction(1, "100.00", categoryId = 7L),
+                transaction(2, "-3.00", categoryId = 8L),
+            ),
+            categories(7L to CategoryKind.TRANSFER, 8L to CategoryKind.EXPENSE),
+            "PLN",
+        )
+        assertEquals(1, totals.excludedTransfers)
+        assertAmount("-3.00", totals.baseOrFail().outgoing)
+        assertAmount("0", totals.baseOrFail().incoming)
+    }
+
+    @Test
+    fun `sums converted base amounts into one currency`() {
+        val items = listOf(
+            transaction(1, "-10.00", currency = "USD", baseAmount = "-9.00", baseCurrency = "EUR"),
+            transaction(2, "-5.00", currency = "EUR"),
+            transaction(3, "20.00", currency = "GBP", baseAmount = "23.00", baseCurrency = "EUR"),
+        )
+        val totals = dailyTotals(items, emptyMap(), "EUR")
+        val base = totals.baseOrFail()
+        assertEquals("EUR", base.currency)
+        assertAmount("-14.00", base.outgoing)
+        assertAmount("23.00", base.incoming)
+        assertTrue(base.converted)
+        assertTrue(totals.unconverted.isEmpty())
+    }
+
+    @Test
+    fun `keeps a row with no rate in its own currency bucket`() {
+        val totals = dailyTotals(
+            listOf(
+                transaction(1, "-10.00", currency = "EUR"),
+                transaction(2, "-50.00", currency = "UAH"),
+            ),
+            emptyMap(),
+            "EUR",
+        )
+        assertAmount("-10.00", totals.baseOrFail().outgoing)
+        val uah = totals.unconverted.single()
+        assertEquals("UAH", uah.currency)
+        assertAmount("-50.00", uah.outgoing)
+    }
+
+    @Test
+    fun `rounds the base total once after summing`() {
+        val items = listOf(
+            transaction(1, "-1.00", currency = "USD", baseAmount = "0.004999", baseCurrency = "EUR"),
+            transaction(2, "-1.00", currency = "USD", baseAmount = "0.004999", baseCurrency = "EUR"),
+        )
+        val base = dailyTotals(items, emptyMap(), "EUR").baseOrFail()
+        // Individually each rounds to 0.00; only a single rounding after summing yields 0.01.
+        assertAmount("0.01", base.incoming)
+        assertAmount("0", base.outgoing)
+    }
+
+    @Test
+    fun `treats a null baseCurrency as today's per-currency output`() {
+        val totals = dailyTotals(
+            listOf(
+                transaction(1, "10.00", currency = "USD", baseAmount = "9.00", baseCurrency = "EUR"),
+                transaction(2, "-5.00", currency = "PLN"),
+            ),
+            emptyMap(),
+            baseCurrency = null,
+        )
+        assertNull(totals.base)
+        assertEquals(listOf("PLN", "USD"), totals.unconverted.map { it.currency })
+        assertAmount("10.00", totals.unconverted.single { it.currency == "USD" }.incoming)
+        assertAmount("-5.00", totals.unconverted.single { it.currency == "PLN" }.outgoing)
+    }
+
+    @Test
+    fun `totals wallet-currency rows when no baseAmount is present`() {
+        val totals = dailyTotals(
+            listOf(
+                transaction(1, "10.00", currency = "EUR"),
+                transaction(2, "-4.00", currency = "EUR"),
+                transaction(3, "-7.00", currency = "USD"),
+            ),
+            emptyMap(),
+            "EUR",
+        )
+        val base = totals.baseOrFail()
+        assertAmount("10.00", base.incoming)
+        assertAmount("-4.00", base.outgoing)
+        assertEquals(false, base.converted)
+        assertEquals(listOf("USD"), totals.unconverted.map { it.currency })
+    }
+
+    @Test
+    fun `counts excluded transfers`() {
+        val totals = dailyTotals(
+            listOf(
+                transaction(1, "100.00", categoryId = 7L),
+                transaction(2, "-50.00", transferGroup = "g"),
+                transaction(3, "-5.00", categoryId = 8L),
+            ),
+            categories(7L to CategoryKind.TRANSFER, 8L to CategoryKind.EXPENSE),
+            "PLN",
+        )
+        assertEquals(2, totals.excludedTransfers)
+        assertAmount("-5.00", totals.baseOrFail().outgoing)
     }
 
     @Test
     fun `keeps exact arithmetic on large amounts`() {
-        val positive = dailyMovements(
+        val positive = dailyTotals(
             listOf(transaction(1, "99999999999999999999999.99"), transaction(2, "0.01")),
-        ).single()
+            emptyMap(),
+            "PLN",
+        ).baseOrFail()
         assertAmount("100000000000000000000000.00", positive.incoming)
         assertAmount("0", positive.outgoing)
 
-        val negative = dailyMovements(
+        val negative = dailyTotals(
             listOf(transaction(1, "-99999999999999999999999.99"), transaction(2, "-0.01")),
-        ).single()
+            emptyMap(),
+            "PLN",
+        ).baseOrFail()
         assertAmount("0", negative.incoming)
         assertAmount("-100000000000000000000000.00", negative.outgoing)
     }
 
     @Test
     fun `recalculates on append and replacement`() {
-        val initial = dailyMovements(listOf(transaction(1, "10"), transaction(2, "-2"))).single()
+        val initial = dailyTotals(listOf(transaction(1, "10"), transaction(2, "-2")), emptyMap(), "PLN").baseOrFail()
         assertAmount("10", initial.incoming)
         assertAmount("-2", initial.outgoing)
 
-        val appended = dailyMovements(
+        val appended = dailyTotals(
             listOf(transaction(1, "10"), transaction(2, "-2"), transaction(3, "5")),
-        ).single()
+            emptyMap(),
+            "PLN",
+        ).baseOrFail()
         assertAmount("15", appended.incoming)
         assertAmount("-2", appended.outgoing)
 
-        val replaced = dailyMovements(
+        val replaced = dailyTotals(
             listOf(transaction(1, "20"), transaction(2, "-4"), transaction(3, "1")),
-        ).single()
+            emptyMap(),
+            "PLN",
+        ).baseOrFail()
         assertAmount("21", replaced.incoming)
         assertAmount("-4", replaced.outgoing)
     }
