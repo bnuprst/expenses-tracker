@@ -14,7 +14,6 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ExitToApp
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.MoreVert
@@ -44,11 +43,13 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.bnuprst.expenses.android.AppViewModel
 import com.bnuprst.expenses.android.R
@@ -67,14 +68,13 @@ fun WalletsScreen(state: UiState, vm: AppViewModel) {
         topBar = {
             Column {
                 LargeTopAppBar(
-                    title = { Text(if (state.userName.isNotBlank()) stringResource(R.string.wallets_greeting, state.userName) else stringResource(R.string.wallets_title)) },
+                    title = { Text(if (state.userName.isNotBlank()) stringResource(R.string.wallets_greeting, state.userName) else stringResource(R.string.wallets_title), maxLines = 1, overflow = TextOverflow.Ellipsis) },
                     actions = {
                         IconButton(onClick = vm::loadWallets) { Icon(Icons.Default.Refresh, stringResource(R.string.action_refresh)) }
                         IconButton(onClick = { menu = true }) { Icon(Icons.Default.MoreVert, stringResource(R.string.action_more)) }
                         DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
                             DropdownMenuItem(
                                 text = { Text(stringResource(R.string.action_sign_out)) },
-                                leadingIcon = { Icon(Icons.AutoMirrored.Filled.ExitToApp, null) },
                                 onClick = { menu = false; vm.logout() },
                             )
                             DropdownMenuItem(
@@ -106,21 +106,21 @@ fun WalletsScreen(state: UiState, vm: AppViewModel) {
         } else {
             LazyColumn(
                 Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = padding.calculateTopPadding() + 8.dp, bottom = padding.calculateBottomPadding() + 88.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp),
+                contentPadding = PaddingValues(start = Dims.Screen, end = Dims.Screen, top = padding.calculateTopPadding() + 8.dp, bottom = padding.calculateBottomPadding() + Dims.FabClearance),
+                verticalArrangement = Arrangement.spacedBy(Dims.ItemGap),
             ) {
                 item { Text(stringResource(R.string.wallets_section), style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary) }
                 items(state.wallets, key = { it.id }) { w ->
                     ElevatedCard(Modifier.fillMaxWidth().clickable { vm.openWallet(w) }) {
                         ListItem(
-                            headlineContent = { Text(w.name, style = MaterialTheme.typography.titleMedium) },
-                            supportingContent = { Text(stringResource(R.string.wallet_subtitle, w.currency, stringResource(if (w.role == WalletRole.OWNER) R.string.role_owner else R.string.role_member))) },
+                            headlineContent = { Text(w.name, style = MaterialTheme.typography.titleMedium, maxLines = 2, overflow = TextOverflow.Ellipsis) },
+                            supportingContent = { Text(stringResource(R.string.wallet_subtitle, w.currency, stringResource(if (w.role == WalletRole.OWNER) R.string.role_owner else R.string.role_member)), maxLines = 1) },
                             leadingContent = {
                                 Surface(shape = RoundedCornerShape(12.dp), color = MaterialTheme.colorScheme.primaryContainer) {
                                     Icon(painterResource(R.drawable.ic_wallet), null, Modifier.padding(10.dp).size(24.dp), tint = MaterialTheme.colorScheme.onPrimaryContainer)
                                 }
                             },
-                            trailingContent = { Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, null) },
+                            trailingContent = { Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, null, tint = MaterialTheme.colorScheme.onSurfaceVariant) },
                             colors = ListItemDefaults.colors(containerColor = Color.Transparent),
                         )
                     }
@@ -144,9 +144,9 @@ private fun NewWalletDialog(onDismiss: () -> Unit, onCreate: (String, String) ->
         icon = { Icon(painterResource(R.drawable.ic_wallet), null) },
         title = { Text(stringResource(R.string.wallets_new)) },
         text = {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.Top) {
                 OutlinedTextField(name, { name = it }, label = { Text(stringResource(R.string.field_name)) }, singleLine = true, modifier = Modifier.weight(1f))
-                OutlinedTextField(currency, { currency = it.take(3).uppercase() }, label = { Text(stringResource(R.string.field_currency)) }, singleLine = true, modifier = Modifier.width(96.dp))
+                OutlinedTextField(currency, { currency = it.take(3).uppercase() }, label = { Text(stringResource(R.string.field_currency)) }, singleLine = true, modifier = Modifier.width(Dims.CurrencyField))
             }
         },
         confirmButton = { TextButton(onClick = { onCreate(name.trim(), currency) }, enabled = name.isNotBlank() && currency.length == 3) { Text(stringResource(R.string.action_create)) } },

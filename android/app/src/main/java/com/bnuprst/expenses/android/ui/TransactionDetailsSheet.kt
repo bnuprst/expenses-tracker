@@ -3,6 +3,7 @@ package com.bnuprst.expenses.android.ui
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
@@ -23,6 +24,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.bnuprst.expenses.android.R
 import com.bnuprst.expenses.shared.CategoryDto
@@ -67,9 +69,9 @@ fun TransactionDetailsSheet(
     val booked = LocalDate.parse(txn.bookingDate)
     val incoming = txn.isIncoming()
     ModalBottomSheet(onDismissRequest = onDismiss, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
-        Column(Modifier.verticalScroll(rememberScrollState()).padding(start = 24.dp, end = 24.dp, bottom = 24.dp)) {
+        Column(Modifier.verticalScroll(rememberScrollState()).padding(start = 24.dp, end = 24.dp, bottom = Dims.ListBottom)) {
             Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                CategoryAvatar(categoryName ?: txn.counterparty ?: txn.description, if (category != null) categoryColor(category.id) else MaterialTheme.colorScheme.outline, 56.dp)
+                CategoryAvatar(categoryName ?: txn.counterparty ?: txn.description, if (category != null) categoryColor(category.id) else MaterialTheme.colorScheme.outline, Dims.AvatarLarge)
                 Text(
                     formatMoney(txn.amount, txn.currency, showPlus = true),
                     style = MaterialTheme.typography.headlineMedium,
@@ -109,13 +111,22 @@ fun TransactionDetailsSheet(
                 }
             }
 
-            Column(Modifier.fillMaxWidth().padding(top = 24.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Column(Modifier.fillMaxWidth().padding(top = Dims.SectionGap + 4.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 if (txn.status == TxnStatus.REVIEW && category != null) {
-                    Button(onClick = { onConfirm(category.id) }, modifier = Modifier.fillMaxWidth()) { Text(stringResource(R.string.action_confirm_category, categoryDisplayName(category))) }
-                    OutlinedButton(onClick = onChangeCategory, modifier = Modifier.fillMaxWidth()) { Text(stringResource(R.string.action_choose_another_category)) }
+                    Button(
+                        onClick = { onConfirm(category.id) },
+                        modifier = Modifier.fillMaxWidth().defaultMinSize(minHeight = Dims.Control),
+                    ) { Text(stringResource(R.string.action_confirm_category, categoryDisplayName(category)), maxLines = 2, overflow = TextOverflow.Ellipsis) }
+                    OutlinedButton(
+                        onClick = onChangeCategory,
+                        modifier = Modifier.fillMaxWidth().defaultMinSize(minHeight = Dims.Control),
+                    ) { Text(stringResource(R.string.action_choose_another_category), maxLines = 2, overflow = TextOverflow.Ellipsis) }
                 } else {
-                    FilledTonalButton(onClick = onChangeCategory, modifier = Modifier.fillMaxWidth()) {
-                        Text(stringResource(if (txn.status == TxnStatus.UNCATEGORIZED) R.string.action_choose_category else R.string.action_change_category))
+                    FilledTonalButton(
+                        onClick = onChangeCategory,
+                        modifier = Modifier.fillMaxWidth().defaultMinSize(minHeight = Dims.Control),
+                    ) {
+                        Text(stringResource(if (txn.status == TxnStatus.UNCATEGORIZED) R.string.action_choose_category else R.string.action_change_category), maxLines = 2, overflow = TextOverflow.Ellipsis)
                     }
                 }
             }
@@ -125,8 +136,8 @@ fun TransactionDetailsSheet(
 
 @Composable
 private fun Detail(label: String, value: String) {
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-        Text(label, Modifier.width(96.dp), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(16.dp), verticalAlignment = Alignment.Top) {
+        Text(label, Modifier.width(Dims.DetailLabel), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Text(value, Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
     }
 }

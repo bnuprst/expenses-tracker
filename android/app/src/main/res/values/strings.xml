@@ -75,6 +75,7 @@
     <string name="banks_remove_title">Remove %1$s?</string>
     <string name="banks_remove_never_authorised">This connection was never authorised.</string>
     <string name="banks_remove_body">Syncing stops. Transactions already imported are kept.</string>
+    <string name="banks_accounts_title">Accounts</string>
     <string name="banks_account_fallback">Account</string>
     <string name="banks_last_sync">Last sync %1$s</string>
     <string name="banks_country_consent">%1$s · consent until %2$s</string>
@@ -111,6 +112,7 @@
     <string name="action_apply">Apply</string>
     <string name="date_picker_title">Select dates</string>
     <string name="day_partial">Loaded so far</string>
+    <string name="day_unconverted">Not converted: no rate</string>
     <string name="txn_suggested">Suggested: %1$s · tap to confirm</string>
     <string name="txn_uncategorized_tap">Uncategorized · tap to choose</string>
 
@@ -203,6 +205,10 @@
     <plurals name="stats_other_currency">
         <item quantity="one">%1$d transaction in another currency is not included.</item>
         <item quantity="other">%1$d transactions in other currencies are not included.</item>
+    </plurals>
+    <plurals name="day_transfers_excluded">
+        <item quantity="one">%1$d transfer between your accounts is left out.</item>
+        <item quantity="other">%1$d transfers between your accounts are left out.</item>
     </plurals>
     <plurals name="stats_categories_count">
         <item quantity="one">%1$d category</item>

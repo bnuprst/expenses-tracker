@@ -3,9 +3,11 @@ package com.bnuprst.expenses.android.ui
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -40,6 +42,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.bnuprst.expenses.android.AppViewModel
@@ -66,7 +69,11 @@ fun StatsScreen(state: UiState, vm: AppViewModel) {
     // Only show figures that belong to the selected period, never a previous one's while it reloads or after it failed.
     val stats = state.stats?.takeIf { it.from == state.statsPeriod.from.toString() && it.to == state.statsPeriod.to.toString() }
     val uncategorized = stringResource(R.string.category_uncategorized)
-    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+    LazyColumn(
+        Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(start = Dims.Screen, end = Dims.Screen, top = Dims.Screen, bottom = Dims.Screen + Dims.ListBottom),
+        verticalArrangement = Arrangement.spacedBy(Dims.Screen),
+    ) {
         item(key = "period") { PeriodSelector(state.statsPeriod, vm::setStatsPeriod) }
         if (stats == null) {
             if (!state.loading) item(key = "failed") {
@@ -85,7 +92,7 @@ fun StatsScreen(state: UiState, vm: AppViewModel) {
                     SegmentedButton(
                         selected = side == kind, onClick = { side = kind },
                         shape = SegmentedButtonDefaults.itemShape(i, 2),
-                    ) { Text(stringResource(if (kind == CategoryKind.EXPENSE) R.string.stats_spending else R.string.stats_income)) }
+                    ) { Text(stringResource(if (kind == CategoryKind.EXPENSE) R.string.stats_spending else R.string.stats_income), maxLines = 1, overflow = TextOverflow.Ellipsis) }
                 }
             }
         }
@@ -148,7 +155,7 @@ private fun PeriodSelector(period: StatsPeriod, onChange: (StatsPeriod) -> Unit)
                     selected = period.granularity == g,
                     onClick = { onChange(StatsPeriod(g, period.anchor)) },
                     shape = SegmentedButtonDefaults.itemShape(i, StatsGranularity.entries.size),
-                ) { Text(stringResource(if (g == StatsGranularity.MONTH) R.string.granularity_month else R.string.granularity_year)) }
+                ) { Text(stringResource(if (g == StatsGranularity.MONTH) R.string.granularity_month else R.string.granularity_year), maxLines = 1, overflow = TextOverflow.Ellipsis) }
             }
         }
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
@@ -156,7 +163,7 @@ private fun PeriodSelector(period: StatsPeriod, onChange: (StatsPeriod) -> Unit)
             Text(
                 if (period.granularity == StatsGranularity.MONTH) period.anchor.format(monthFormat()) else period.anchor.year.toString(),
                 style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f),
-                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                textAlign = TextAlign.Center, maxLines = 1, overflow = TextOverflow.Ellipsis,
             )
             val atPresent = !period.to.isBefore(LocalDate.now())
             IconButton(onClick = { onChange(period.shift(1)) }, enabled = !atPresent) { Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, stringResource(R.string.action_next)) }
@@ -170,10 +177,10 @@ private fun Summary(stats: StatsDto) {
     val earned = stats.totalIncome.toBigDecimalOrNull() ?: BigDecimal.ZERO
     val net = earned - spent
     val colors = LocalAmountColors.current
-    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        SummaryCard(stringResource(R.string.stats_spent), formatMoney(spent, stats.currency), MaterialTheme.colorScheme.onSurface, Modifier.weight(1f))
-        SummaryCard(stringResource(R.string.stats_earned), formatMoney(earned, stats.currency), colors.income, Modifier.weight(1f))
-        SummaryCard(stringResource(R.string.stats_net), formatMoney(net, stats.currency, showPlus = true), if (net.signum() < 0) colors.expense else colors.income, Modifier.weight(1f))
+    Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        SummaryCard(stringResource(R.string.stats_spent), formatMoney(spent, stats.currency), MaterialTheme.colorScheme.onSurface, Modifier.weight(1f).fillMaxHeight())
+        SummaryCard(stringResource(R.string.stats_earned), formatMoney(earned, stats.currency), colors.income, Modifier.weight(1f).fillMaxHeight())
+        SummaryCard(stringResource(R.string.stats_net), formatMoney(net, stats.currency, showPlus = true), if (net.signum() < 0) colors.expense else colors.income, Modifier.weight(1f).fillMaxHeight())
     }
 }
 
@@ -181,7 +188,7 @@ private fun Summary(stats: StatsDto) {
 private fun SummaryCard(label: String, value: String, color: Color, modifier: Modifier) {
     Card(modifier, colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh)) {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Text(label, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(label, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2, overflow = TextOverflow.Ellipsis)
             Text(value, style = MaterialTheme.typography.titleSmall, color = color, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
     }
@@ -199,9 +206,9 @@ private fun Breakdown(shares: List<Share>, total: BigDecimal, currency: String, 
             DonutChart(slices, Modifier.size(200.dp)) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Text(stringResource(if (side == CategoryKind.EXPENSE) R.string.stats_spent else R.string.stats_earned), style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Text(formatMoney(total, currency), style = MaterialTheme.typography.titleLarge)
-                    Text(pluralStringResource(R.plurals.stats_categories_count, shares.size, shares.size), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center)
+                    Text(formatMoney(total, currency), style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center)
+                    Text(pluralStringResource(R.plurals.stats_categories_count, shares.size, shares.size), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center)
                 }
             }
         }
@@ -212,15 +219,15 @@ private fun Breakdown(shares: List<Share>, total: BigDecimal, currency: String, 
 private fun ShareRow(s: Share, total: BigDecimal, currency: String, onClick: () -> Unit) {
     val fraction = if (total.signum() > 0) (s.amount.toFloat() / total.toFloat()).coerceAtLeast(0f) else 0f
     Row(
-        Modifier.fillMaxWidth().clickable(onClick = onClick).padding(vertical = 4.dp),
+        Modifier.fillMaxWidth().clickable(onClick = onClick).padding(vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        CategoryAvatar(categoryDisplayName(s.name, s.slug), s.color)
+        CategoryAvatar(categoryDisplayName(s.name, s.slug), s.color, Dims.AvatarDefault)
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(categoryDisplayName(s.name, s.slug), style = MaterialTheme.typography.bodyLarge, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
-                Text(formatMoney(s.amount, currency), style = MaterialTheme.typography.titleSmall)
+                Text(formatMoney(s.amount, currency), style = MaterialTheme.typography.titleSmall, maxLines = 1)
             }
             ShareBar(fraction, s.color, Modifier.fillMaxWidth())
             Text(

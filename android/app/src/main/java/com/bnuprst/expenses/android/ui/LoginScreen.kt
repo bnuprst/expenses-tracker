@@ -3,6 +3,7 @@ package com.bnuprst.expenses.android.ui
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -42,6 +43,7 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.bnuprst.expenses.android.AppViewModel
 import com.bnuprst.expenses.android.R
@@ -63,9 +65,9 @@ fun LoginScreen(state: UiState, vm: AppViewModel) {
         Column(
             Modifier.padding(padding).fillMaxSize().imePadding().verticalScroll(rememberScrollState()).padding(24.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(12.dp),
+            verticalArrangement = Arrangement.spacedBy(Dims.ItemGap),
         ) {
-            Spacer(Modifier.height(32.dp))
+            Spacer(Modifier.height(Dims.SectionGap))
             Surface(shape = RoundedCornerShape(24.dp), color = MaterialTheme.colorScheme.primaryContainer) {
                 Icon(painterResource(R.drawable.ic_wallet), null, Modifier.padding(20.dp).size(40.dp), tint = MaterialTheme.colorScheme.onPrimaryContainer)
             }
@@ -74,8 +76,8 @@ fun LoginScreen(state: UiState, vm: AppViewModel) {
                 stringResource(if (register) R.string.login_subtitle_create else R.string.login_subtitle_signin),
                 style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            Spacer(Modifier.height(8.dp))
-            val fieldModifier = Modifier.fillMaxWidth().widthIn(max = 480.dp)
+            Spacer(Modifier.height(Dims.ItemGap))
+            val fieldModifier = Modifier.widthIn(max = 480.dp).fillMaxWidth()
             OutlinedTextField(
                 server, { server = it }, label = { Text(stringResource(R.string.field_server_url)) }, singleLine = true, modifier = fieldModifier,
                 leadingIcon = { Icon(painterResource(R.drawable.ic_account_balance), null) },
@@ -107,11 +109,17 @@ fun LoginScreen(state: UiState, vm: AppViewModel) {
                 keyboardActions = KeyboardActions(onDone = { submit() }),
             )
             Spacer(Modifier.height(4.dp))
-            Button(onClick = submit, enabled = canSubmit, modifier = fieldModifier.height(48.dp)) {
-                Text(stringResource(if (register) R.string.login_title_create else R.string.action_sign_in))
+            Button(onClick = submit, enabled = canSubmit, modifier = fieldModifier.defaultMinSize(minHeight = Dims.Control)) {
+                Text(stringResource(if (register) R.string.login_title_create else R.string.action_sign_in), maxLines = 1)
             }
-            TextButton(onClick = { register = !register }) { Text(stringResource(if (register) R.string.login_switch_to_signin else R.string.login_switch_to_register)) }
-            TextButton(onClick = { language = true }) { Text(stringResource(R.string.action_language)) }
+            Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(0.dp)) {
+                TextButton(onClick = { register = !register }) {
+                    Text(stringResource(if (register) R.string.login_switch_to_signin else R.string.login_switch_to_register), maxLines = 2, textAlign = TextAlign.Center)
+                }
+                TextButton(onClick = { language = true }) {
+                    Text(stringResource(R.string.action_language), maxLines = 2, textAlign = TextAlign.Center)
+                }
+            }
             if (language) LanguageDialog { language = false }
         }
     }

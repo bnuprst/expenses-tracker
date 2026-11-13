@@ -19,10 +19,18 @@ import com.bnuprst.expenses.categorization.FakeLlm
 import com.bnuprst.expenses.config.AppConfig
 import com.bnuprst.expenses.config.DbConfig
 import com.bnuprst.expenses.db.Db
+import com.bnuprst.expenses.db.FxCoverage
+import com.bnuprst.expenses.db.FxRates
+import com.bnuprst.expenses.db.Transactions
+import com.bnuprst.expenses.db.dbQuery
+import com.bnuprst.expenses.fx.FakeFxProvider
+import com.bnuprst.expenses.fx.FxDay
+import com.bnuprst.expenses.fx.MutableClock
 import com.bnuprst.expenses.shared.AuthResponse
 import com.bnuprst.expenses.shared.BankAuthResponse
 import com.bnuprst.expenses.shared.BankConnectionDto
 import com.bnuprst.expenses.shared.CategoryDto
+import com.bnuprst.expenses.shared.CategoryKind
 import com.bnuprst.expenses.shared.CategorySource
 import com.bnuprst.expenses.shared.ConnectionStatus
 import com.bnuprst.expenses.shared.CreateTransactionRequest
@@ -53,14 +61,32 @@ import io.ktor.http.contentType
 import io.ktor.serialization.kotlinx.json.json
 import io.ktor.server.testing.ApplicationTestBuilder
 import io.ktor.server.testing.testApplication
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.joinAll
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeout
+import org.jetbrains.exposed.sql.SqlExpressionBuilder.eq
+import org.jetbrains.exposed.sql.and
+import org.jetbrains.exposed.sql.deleteWhere
+import org.jetbrains.exposed.sql.insert
+import org.jetbrains.exposed.sql.select
+import org.jetbrains.exposed.sql.selectAll
 import org.jetbrains.exposed.sql.transactions.transaction
 import org.testcontainers.containers.PostgreSQLContainer
+import java.math.BigDecimal
+import java.time.Clock
+import java.time.Instant
 import java.time.LocalDate
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.withTimeout
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 object TestDb {
@@ -76,13 +102,19 @@ object TestDb {
     init { Db.connect(config) }
 
     fun reset() = transaction {
-        exec("TRUNCATE users, wallets, bank_connections RESTART IDENTITY CASCADE")
+        exec("TRUNCATE users, wallets, bank_connections, fx_rates, fx_coverage RESTART IDENTITY CASCADE")
     }
 }
 
 class FakeBank : EnableBankingApi {
     var lastAuth: EbAuthRequest? = null
     var pages: List<EbTransaction> = emptyList()
+    /** Per-account pages, keyed by EbAccount.uid; falls back to [pages] when absent. */
+    var pagesByAccount: Map<String, List<EbTransaction>> = emptyMap()
+    /** Accounts returned by createSession; tests may replace them with two to exercise own-account pairs. */
+    var accounts: List<EbAccount> = listOf(
+        EbAccount("uid-1", EbAccountId(iban = "FI2112345600000785"), "hash-1", "Main", "EUR"),
+    )
     var transactionCalls = 0
     val dateFroms = mutableListOf<LocalDate>()
     val psus = mutableListOf<PsuContext?>()
@@ -94,8 +126,7 @@ class FakeBank : EnableBankingApi {
     override suspend fun aspsps(country: String?) = listOf(EbAspsp("Nordea", "FI", maximumConsentValidity = 90L * 86400))
     override suspend fun startAuth(request: EbAuthRequest) = EbAuthResponse("https://bank.example/auth?s=${request.state}").also { lastAuth = request }
     override suspend fun createSession(code: String) =
-        EbSessionResponse("sess-1", access = EbAccess("2027-01-01T00:00:00+00:00")) to
-            listOf(EbAccount("uid-1", EbAccountId(iban = "FI2112345600000785"), "hash-1", "Main", "EUR"))
+        EbSessionResponse("sess-1", access = EbAccess("2027-01-01T00:00:00+00:00")) to accounts
     override suspend fun transactions(accountUid: String, dateFrom: LocalDate, continuationKey: String?, psu: PsuContext?): EbTransactionsPage {
         transactionCalls++
         dateFroms += dateFrom
@@ -103,13 +134,14 @@ class FakeBank : EnableBankingApi {
         if ((unattendedLimitReached && psu == null) || (userLimitReached && psu != null)) {
             throw EnableBankingException(429, """{"code":429,"message":"Too many requests","error":"ASPSP_RATE_LIMIT_EXCEEDED"}""")
         }
-        return EbTransactionsPage(pages)
+        return EbTransactionsPage(pagesByAccount[accountUid] ?: pages)
     }
 }
 
 class IntegrationTest {
     private val llm = FakeLlm("""{"category_id": 0, "confidence": 0.3}""")
     private val bank = FakeBank()
+    private val fxProvider = FakeFxProvider()
     private lateinit var services: Services
 
     @BeforeTest
@@ -117,20 +149,33 @@ class IntegrationTest {
         TestDb.reset()
     }
 
-    private fun app(block: suspend ApplicationTestBuilder.(HttpClient) -> Unit) = testApplication {
+    private fun app(
+        extraEnv: Map<String, String> = emptyMap(),
+        clock: Clock = Clock.systemUTC(),
+        block: suspend ApplicationTestBuilder.(HttpClient) -> Unit,
+    ) = testApplication {
         val base = AppConfig.fromEnv(
             mapOf(
                 "JWT_SECRET" to "test-secret", "EB_APP_ID" to "app", "EB_PRIVATE_KEY_PATH" to "/dev/null",
                 "LLM_API_KEY" to "x", "APP_REDIRECT_URL" to "expenses://bank-connected",
-            )
+            ) + extraEnv
         )
-        services = buildServices(base.copy(db = TestDb.config), llmProvider = llm, bankingApi = bank)
+        services = buildServices(
+            base.copy(db = TestDb.config), llmProvider = llm, bankingApi = bank,
+            fxProvider = fxProvider, clock = clock,
+        )
         application { module(services) }
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        services.fx.startScheduler(scope)
         val client = createClient {
             install(ContentNegotiation) { json() }
             followRedirects = false
         }
-        block(client)
+        try {
+            block(client)
+        } finally {
+            scope.cancel()
+        }
     }
 
     private suspend fun HttpClient.register(email: String): AuthResponse =
@@ -157,6 +202,87 @@ class IntegrationTest {
             bearerAuth(token); json()
             setBody(mapOf("bookingDate" to "2026-10-10", "amount" to "-12.50", "description" to desc, "counterparty" to counterparty))
         }.also { assertEquals(HttpStatusCode.Created, it.status) }.body()
+
+    /** Connects the fake bank and waits for both the callback's background sync and this one. */
+    private suspend fun HttpClient.connectAndSync(token: String, walletId: Long): BankAuthResponse {
+        val auth: BankAuthResponse = post("/api/v1/wallets/$walletId/bank-connections") {
+            bearerAuth(token); json(); setBody(mapOf("aspspName" to "Nordea", "country" to "FI"))
+        }.body()
+        get("/api/v1/banking/callback?state=${bank.lastAuth!!.state}&code=abc")
+        sync(token, auth.connectionId)
+        return auth
+    }
+
+    private suspend fun seedRate(asOf: LocalDate, quote: String, value: String) {
+        dbQuery {
+            FxRates.insert {
+                it[FxRates.asOf] = asOf
+                it[FxRates.base] = "EUR"
+                it[FxRates.quote] = quote
+                it[FxRates.rate] = BigDecimal(value)
+                it[FxRates.rateSource] = "seed"
+            }
+            FxCoverage.insert {
+                it[FxCoverage.base] = "EUR"
+                it[FxCoverage.asOf] = asOf
+                it[FxCoverage.published] = true
+                it[FxCoverage.fetchedAt] = java.time.OffsetDateTime.now(java.time.ZoneOffset.UTC)
+            }
+        }
+    }
+
+    /** A raw row: no bank account, so its account key comes from [account] (or is null when absent). */
+    private suspend fun seedRow(
+        walletId: Long,
+        date: String,
+        amount: String,
+        currency: String = "EUR",
+        account: String? = null,
+        description: String = "movement",
+        group: String? = null,
+    ): Long = dbQuery {
+        Transactions.insert {
+            it[Transactions.walletId] = walletId
+            it[Transactions.bankAccountId] = null
+            it[Transactions.externalId] = null
+            it[Transactions.bookingDate] = LocalDate.parse(date)
+            it[Transactions.amount] = BigDecimal(amount)
+            it[Transactions.currency] = currency
+            it[Transactions.descriptionRaw] = description
+            it[Transactions.counterparty] = null
+            it[Transactions.merchantKey] = "seed"
+            it[Transactions.categoryId] = null
+            it[Transactions.categorySource] = null
+            it[Transactions.confidence] = null
+            it[Transactions.status] = TxnStatus.UNCATEGORIZED.name
+            it[Transactions.sourceAccount] = account
+            it[Transactions.transferGroup] = group
+        }[Transactions.id]
+    }
+
+    private suspend fun groupOf(id: Long): String? = dbQuery {
+        Transactions.select(Transactions.transferGroup).where { Transactions.id eq id }.single()[Transactions.transferGroup]
+    }
+
+    private suspend fun overrideOf(id: Long): Boolean = dbQuery {
+        Transactions.select(Transactions.transferOverride).where { Transactions.id eq id }.single()[Transactions.transferOverride]
+    }
+
+    private suspend fun awaitGrouped(first: Long, second: Long) = withTimeout(10_000) {
+        while (true) {
+            val a = groupOf(first)
+            val b = groupOf(second)
+            if (a != null && a == b) return@withTimeout
+            delay(20)
+        }
+    }
+
+    private suspend fun HttpClient.createWallet(token: String, currency: String): WalletDto =
+        post("/api/v1/wallets") { bearerAuth(token); json(); setBody(mapOf("name" to "Family", "currency" to currency)) }.body()
+
+    private suspend fun HttpClient.groceries(token: String, walletId: Long): Long =
+        get("/api/v1/wallets/$walletId/categories") { bearerAuth(token) }
+            .body<List<CategoryDto>>().first { it.name == "Groceries" }.id
 
     @Test
     fun `correction feeds merchant memory so the next transaction skips the llm`() = app { client ->
@@ -592,5 +718,374 @@ class IntegrationTest {
         assertEquals(manualEn, lastError(null))
         assertEquals(manualUk, lastError("uk"))
         assertEquals(manualPl, lastError("pl"))
+    }
+
+    // --- FX conversion ---
+
+    @Test
+    fun `transactions carry the amount converted into the wallet currency`() = app { client ->
+        val token = client.register("anna@example.com").token
+        val wallet = client.createWallet(token)
+        seedRate(LocalDate.parse("2026-10-14"), "USD", "1.10")
+        client.txn(token, wallet.id, "2026-10-14", "-99.00", "Amazon US", currency = "USD")
+        client.txn(token, wallet.id, "2026-10-14", "-10.00", "Lidl")
+
+        val rows = client.get("/api/v1/wallets/${wallet.id}/transactions") { bearerAuth(token) }.body<List<TransactionDto>>()
+        val usd = rows.single { it.currency == "USD" }
+        assertEquals("EUR", usd.baseCurrency)
+        assertEquals("2026-10-14", usd.baseRateDate)
+        assertAmount("-90.000000", usd.baseAmount!!)
+        val eur = rows.single { it.currency == "EUR" }
+        assertEquals("EUR", eur.baseCurrency)
+        assertEquals(eur.amount, eur.baseAmount)
+    }
+
+    @Test
+    fun `fx disabled leaves every converted field null`() = app(extraEnv = mapOf("FX_ENABLED" to "false")) { client ->
+        val token = client.register("anna@example.com").token
+        val wallet = client.createWallet(token)
+        seedRate(LocalDate.parse("2026-10-14"), "USD", "1.10")
+        client.txn(token, wallet.id, "2026-10-14", "-99.00", "Amazon US", currency = "USD")
+        client.txn(token, wallet.id, "2026-10-14", "-10.00", "Lidl")
+
+        val rows = client.get("/api/v1/wallets/${wallet.id}/transactions") { bearerAuth(token) }.body<List<TransactionDto>>()
+        assertEquals(2, rows.size)
+        for (row in rows) {
+            assertNull(row.baseAmount)
+            assertNull(row.baseCurrency)
+            assertNull(row.baseRateDate)
+        }
+    }
+
+    @Test
+    fun `a day with no published rate falls back to the previous business day`() = app { client ->
+        val token = client.register("anna@example.com").token
+        val wallet = client.createWallet(token)
+        seedRate(LocalDate.parse("2026-10-09"), "USD", "1.10")
+        client.txn(token, wallet.id, "2026-10-11", "-50.00", "Amazon US", currency = "USD")
+
+        val rows = client.get("/api/v1/wallets/${wallet.id}/transactions") { bearerAuth(token) }.body<List<TransactionDto>>()
+        val usd = rows.single { it.currency == "USD" }
+        assertEquals("2026-10-09", usd.baseRateDate)
+        assertAmount("-45.454545", usd.baseAmount!!)
+    }
+
+    @Test
+    fun `a currency with no rate at all stays unconverted`() = app { client ->
+        val token = client.register("anna@example.com").token
+        val wallet = client.createWallet(token)
+        client.txn(token, wallet.id, "2026-10-14", "-50.00", "Kyiv Shop", currency = "UAH")
+
+        val rows = client.get("/api/v1/wallets/${wallet.id}/transactions") { bearerAuth(token) }.body<List<TransactionDto>>()
+        val uah = rows.single { it.currency == "UAH" }
+        assertNull(uah.baseAmount)
+        assertEquals("EUR", uah.baseCurrency)
+        val stats: StatsDto = client.get("/api/v1/wallets/${wallet.id}/stats?from=2026-10-01&to=2026-10-31") { bearerAuth(token) }.body()
+        assertAmount("0", stats.totalExpenses)
+        assertEquals(1, stats.otherCurrencyCount)
+    }
+
+    @Test
+    fun `an unpaired foreign-currency transfer is not counted as other currency`() = app { client ->
+        val token = client.register("anna@example.com").token
+        val wallet = client.createWallet(token)
+        val categories: List<CategoryDto> = client.get("/api/v1/wallets/${wallet.id}/categories") { bearerAuth(token) }.body()
+        fun cat(name: String) = categories.first { it.name == name }.id
+        client.txn(token, wallet.id, "2026-10-14", "-50.00", "Mystery", cat("Transfers"), currency = "USD")
+        client.txn(token, wallet.id, "2026-10-14", "-40.00", "Amazon", cat("Groceries"), currency = "USD")
+
+        val stats: StatsDto = client.get("/api/v1/wallets/${wallet.id}/stats?from=2026-10-01&to=2026-10-31") { bearerAuth(token) }.body()
+        assertEquals(1, stats.otherCurrencyCount, "the TRANSFER-kind row is not an other-currency expense")
+    }
+
+    // --- internal transfers ---
+
+    @Test
+    fun `internal transfers between own accounts are paired and excluded`() = app { client ->
+        val token = client.register("anna@example.com").token
+        val wallet = client.createWallet(token)
+        llm.fail = true
+        bank.accounts = listOf(
+            EbAccount("uid-A", EbAccountId(iban = "FI1111111111111111"), "hash-A", "Main", "EUR"),
+            EbAccount("uid-B", EbAccountId(iban = "FI9999999999999999"), "hash-B", "Savings", "EUR"),
+        )
+        bank.pagesByAccount = mapOf(
+            "uid-A" to listOf(
+                EbTransaction(
+                    "OUT", null, EbAmount("EUR", "200.00"), "DBIT", "BOOK", "2026-10-01",
+                    creditor = EbParty("Savings"), creditorAccount = EbAccountId(iban = "FI0000000000009999"),
+                ),
+            ),
+            "uid-B" to listOf(
+                EbTransaction(
+                    "IN", null, EbAmount("EUR", "200.00"), "CRDT", "BOOK", "2026-10-03",
+                    debtor = EbParty("Main"), debtorAccount = EbAccountId(iban = "FI0000000000001111"),
+                ),
+            ),
+        )
+        client.connectAndSync(token, wallet.id)
+
+        suspend fun rows() = client.get("/api/v1/wallets/${wallet.id}/transactions") { bearerAuth(token) }
+            .body<List<TransactionDto>>()
+        val first = rows()
+        val out = first.single { it.amount == "-200.00" }
+        val incoming = first.single { it.amount == "200.00" }
+        assertNotNull(out.transferGroup)
+        assertEquals(out.transferGroup, incoming.transferGroup)
+
+        val stats: StatsDto = client.get("/api/v1/wallets/${wallet.id}/stats?from=2026-10-01&to=2026-10-31") { bearerAuth(token) }.body()
+        assertAmount("0", stats.totalExpenses)
+        assertAmount("0", stats.totalIncome)
+        assertEquals(0, stats.otherCurrencyCount)
+
+        // Idempotent: a second scan leaves the same two ids grouped and flags no third row.
+        services.transfers.scan(wallet.id, LocalDate.parse("2026-10-01"), LocalDate.parse("2026-10-03"))
+        val second = rows()
+        assertEquals(setOf(out.id, incoming.id), second.filter { it.transferGroup != null }.map { it.id }.toSet())
+        assertEquals(groupOf(out.id), groupOf(incoming.id))
+    }
+
+    @Test
+    fun `an in-app currency exchange is paired across currencies`() = app { client ->
+        val token = client.register("anna@example.com").token
+        val wallet = client.createWallet(token)
+        llm.fail = true
+        val date = "2026-10-06"
+        fxProvider.days = listOf(FxDay(LocalDate.parse(date), "EUR", mapOf("USD" to BigDecimal("1.08"))))
+        bank.pages = listOf(
+            EbTransaction("X1", null, EbAmount("EUR", "100.00"), "DBIT", "BOOK", date, creditor = EbParty("Exchange")),
+            EbTransaction("X2", null, EbAmount("USD", "108.00"), "CRDT", "BOOK", date, debtor = EbParty("Exchange")),
+        )
+        client.connectAndSync(token, wallet.id)
+
+        val rows = client.get("/api/v1/wallets/${wallet.id}/transactions") { bearerAuth(token) }.body<List<TransactionDto>>()
+        val out = rows.single { it.currency == "EUR" }
+        val incoming = rows.single { it.currency == "USD" }
+        assertNotNull(out.transferGroup)
+        assertEquals(out.transferGroup, incoming.transferGroup)
+    }
+
+    @Test
+    fun `unrelated same-amount transactions in different accounts stay in the totals`() = app { client ->
+        val token = client.register("anna@example.com").token
+        val wallet = client.createWallet(token)
+        llm.fail = true
+        bank.accounts = listOf(
+            EbAccount("uid-A", EbAccountId(iban = "FI1111111111111111"), "hash-A", "Main", "EUR"),
+            EbAccount("uid-B", EbAccountId(iban = "FI9999999999999999"), "hash-B", "Savings", "EUR"),
+        )
+        bank.pagesByAccount = mapOf(
+            "uid-A" to listOf(
+                EbTransaction("OUT", null, EbAmount("EUR", "200.00"), "DBIT", "BOOK", "2026-10-01", creditor = EbParty("Landlord")),
+            ),
+            "uid-B" to listOf(
+                EbTransaction("IN", null, EbAmount("EUR", "200.00"), "CRDT", "BOOK", "2026-10-02", debtor = EbParty("ACME")),
+            ),
+        )
+        client.connectAndSync(token, wallet.id)
+
+        val rows = client.get("/api/v1/wallets/${wallet.id}/transactions") { bearerAuth(token) }.body<List<TransactionDto>>()
+        assertEquals(2, rows.size)
+        assertTrue(rows.all { it.transferGroup == null })
+        val stats: StatsDto = client.get("/api/v1/wallets/${wallet.id}/stats?from=2026-10-01&to=2026-10-31") { bearerAuth(token) }.body()
+        assertAmount("200.00", stats.totalExpenses)
+        assertAmount("200.00", stats.totalIncome)
+    }
+
+    @Test
+    fun `a manually added transaction is never paired`() = app { client ->
+        val token = client.register("anna@example.com").token
+        val wallet = client.createWallet(token)
+        val day = LocalDate.parse("2026-10-10")
+        client.txn(token, wallet.id, day.toString(), "-100.00", "transfer to savings")
+        client.txn(token, wallet.id, day.toString(), "100.00", "transfer from main")
+        services.transfers.scan(wallet.id, day, day)
+
+        val rows = client.get("/api/v1/wallets/${wallet.id}/transactions") { bearerAuth(token) }.body<List<TransactionDto>>()
+        assertTrue(rows.all { it.transferGroup == null })
+    }
+
+    @Test
+    fun `a manual non-transfer category releases both legs of a transfer`() = app { client ->
+        val token = client.register("anna@example.com").token
+        val wallet = client.createWallet(token)
+        val outId = seedRow(wallet.id, "2026-10-10", "-100", account = "Main", description = "transfer out", group = "G")
+        val inId = seedRow(wallet.id, "2026-10-12", "100", account = "Savings", description = "transfer in", group = "G")
+        val groceries = client.groceries(token, wallet.id)
+
+        val patched: TransactionDto = client.patch("/api/v1/transactions/$outId") {
+            bearerAuth(token); json(); setBody(mapOf("categoryId" to groceries))
+        }.body()
+        assertNull(patched.transferGroup)
+        assertNull(groupOf(outId))
+        assertNull(groupOf(inId))
+        assertTrue(overrideOf(outId))
+
+        services.transfers.scan(wallet.id, LocalDate.parse("2026-10-10"), LocalDate.parse("2026-10-12"))
+        assertNull(groupOf(outId), "a scan must not re-flag a row the user released")
+        assertNull(groupOf(inId))
+    }
+
+    @Test
+    fun `an imported category does not suppress transfer detection`() = app { client ->
+        val token = client.register("anna@example.com").token
+        val wallet = client.createWallet(token)
+        val body = """
+            {"source":"actual",
+             "categories":[{"name":"Groceries","kind":"EXPENSE"}],
+             "transactions":[
+               {"externalId":"o1","date":"2025-01-10","amount":"-100.00","payee":"Own","notes":"transfer to savings","category":"Groceries","account":"Main"},
+               {"externalId":"i1","date":"2025-01-11","amount":"100.00","payee":"Own","notes":"transfer from main","category":"Groceries","account":"Savings"}
+             ]}
+        """.trimIndent()
+        client.post("/api/v1/wallets/${wallet.id}/import") { bearerAuth(token); json(); setBody(body) }
+        client.post("/api/v1/wallets/${wallet.id}/import/finalize?source=actual") { bearerAuth(token) }
+
+        val rows = client.get("/api/v1/wallets/${wallet.id}/transactions") { bearerAuth(token) }.body<List<TransactionDto>>()
+        assertEquals(2, rows.size)
+        assertNotNull(rows[0].transferGroup)
+        assertEquals(rows[0].transferGroup, rows[1].transferGroup)
+        for (row in rows) assertTrue(!overrideOf(row.id), "an importer-supplied category must not become a user veto")
+    }
+
+    @Test
+    fun `a concurrent scan does not re-flag a released transfer`() = app { client ->
+        val token = client.register("anna@example.com").token
+        val wallet = client.createWallet(token)
+        val groceries = client.groceries(token, wallet.id)
+        repeat(20) { i ->
+            val day = LocalDate.parse("2025-01-01").plusDays(i * 10L)
+            val outId = seedRow(wallet.id, day.toString(), "-100", account = "Main", description = "transfer out", group = "G$i")
+            val inId = seedRow(wallet.id, day.plusDays(2).toString(), "100", account = "Savings", description = "transfer in", group = "G$i")
+            coroutineScope {
+                val scan = launch(Dispatchers.Default) {
+                    services.transfers.scan(wallet.id, day, day.plusDays(2))
+                }
+                val patch = launch(Dispatchers.Default) {
+                    client.patch("/api/v1/transactions/$outId") {
+                        bearerAuth(token); json(); setBody(mapOf("categoryId" to groceries))
+                    }.body<TransactionDto>()
+                }
+                joinAll(scan, patch)
+            }
+            assertNull(groupOf(outId), "iteration $i: the patched row was re-flagged")
+            assertNull(groupOf(inId), "iteration $i: the released partner stayed grouped")
+            assertTrue(overrideOf(outId), "iteration $i: the user's override was lost")
+        }
+    }
+
+    @Test
+    fun `a scan window that touches one leg clears or rebuilds the whole group`() = app { client ->
+        val token = client.register("anna@example.com").token
+        val wallet = client.createWallet(token)
+        val outId = seedRow(wallet.id, "2026-10-01", "-100", account = "Main", description = "transfer out")
+        val inId = seedRow(wallet.id, "2026-10-03", "100", account = "Savings", description = "transfer in")
+
+        services.transfers.scan(wallet.id, LocalDate.parse("2026-10-03"), LocalDate.parse("2026-10-03"))
+        val group = groupOf(outId)
+        assertNotNull(group)
+        assertEquals(group, groupOf(inId))
+
+        dbQuery { Transactions.deleteWhere { Transactions.id eq outId } }
+        services.transfers.scan(wallet.id, LocalDate.parse("2026-10-03"), LocalDate.parse("2026-10-03"))
+        assertNull(groupOf(inId))
+    }
+
+    @Test
+    fun `a boundary group dragged in by widening is rebuilt whole`() = app { client ->
+        val token = client.register("anna@example.com").token
+        val wallet = client.createWallet(token)
+        val base = LocalDate.parse("2025-02-01")
+        val bOut = seedRow(wallet.id, base.plusDays(-2).toString(), "-100", account = "Main", description = "transfer b out", group = "B")
+        val bIn = seedRow(wallet.id, base.plusDays(1).toString(), "100", account = "Savings", description = "transfer b in", group = "B")
+        val aOut = seedRow(wallet.id, base.plusDays(2).toString(), "-100", account = "Main", description = "transfer a out", group = "A")
+        val aIn = seedRow(wallet.id, base.plusDays(5).toString(), "100", account = "Savings", description = "transfer a in", group = "A")
+
+        services.transfers.scan(wallet.id, base.plusDays(3), base.plusDays(3))
+
+        val groupA = groupOf(aOut)
+        assertNotNull(groupA)
+        assertEquals(groupA, groupOf(aIn))
+        val groupB = groupOf(bOut)
+        assertNotNull(groupB)
+        assertEquals(groupB, groupOf(bIn))
+    }
+
+    @Test
+    fun `a scan that fetches new rates does not deadlock`() = app { client ->
+        val token = client.register("anna@example.com").token
+        val wallet = client.createWallet(token)
+        val day = LocalDate.parse("2026-10-05")
+        val outId = seedRow(wallet.id, day.toString(), "-100", account = "Main", description = "exchange")
+        val inId = seedRow(wallet.id, day.toString(), "108", account = "Savings", description = "exchange", currency = "USD")
+        fxProvider.days = listOf(FxDay(day, "EUR", mapOf("USD" to BigDecimal("1.08"))))
+
+        withTimeout(10_000) { services.transfers.scan(wallet.id, day, day) }
+        val group = groupOf(outId)
+        assertNotNull(group)
+        assertEquals(group, groupOf(inId))
+    }
+
+    @Test
+    fun `a cross-currency pair is formed once rates arrive`() {
+        val clock = MutableClock(Instant.parse("2026-11-13T00:00:00Z"))
+        app(clock = clock) { client ->
+            val token = client.register("anna@example.com").token
+            val wallet = client.createWallet(token)
+            val day = LocalDate.parse("2026-11-13")
+            val outId = seedRow(wallet.id, day.toString(), "-100", account = "Main", description = "exchange")
+            val inId = seedRow(wallet.id, day.toString(), "108", account = "Savings", description = "exchange", currency = "USD")
+
+            services.transfers.scan(wallet.id, day, day)
+            assertNull(groupOf(outId), "without a rate the pair must stay visible")
+
+            fxProvider.days = listOf(FxDay(day, "EUR", mapOf("USD" to BigDecimal("1.08"))))
+            clock.now = clock.now.plusSeconds(12 * 3600 + 1)
+            services.fx.ensureCovered(day, day, notify = true)
+            awaitGrouped(outId, inId)
+        }
+    }
+
+    @Test
+    fun `a weekend pair is formed once Friday's rate arrives`() {
+        val clock = MutableClock(Instant.parse("2026-10-10T00:00:00Z"))
+        app(clock = clock) { client ->
+            val token = client.register("anna@example.com").token
+            val wallet = client.createWallet(token)
+            val saturday = LocalDate.parse("2026-10-10")
+            val sunday = saturday.plusDays(1)
+            val friday = saturday.minusDays(1)
+            val outId = seedRow(wallet.id, saturday.toString(), "-100", account = "Main", description = "exchange")
+            val inId = seedRow(wallet.id, sunday.toString(), "108", account = "Savings", description = "exchange", currency = "USD")
+
+            services.transfers.scan(wallet.id, saturday, sunday)
+            assertNull(groupOf(outId), "without a rate the pair must stay visible")
+
+            fxProvider.days = listOf(FxDay(friday, "EUR", mapOf("USD" to BigDecimal("1.08"))))
+            clock.now = clock.now.plusSeconds(12 * 3600 + 1)
+            services.fx.ensureCovered(friday, sunday, notify = true)
+            awaitGrouped(outId, inId)
+        }
+    }
+
+    @Test
+    fun `a scan that fetches rates rescans other wallets`() = app { client ->
+        val token = client.register("anna@example.com").token
+        val walletA = client.createWallet(token)
+        val walletB = client.createWallet(token)
+        val day = LocalDate.parse("2026-10-05")
+        val aOut = seedRow(walletA.id, day.toString(), "-100", account = "Main", description = "exchange")
+        val aIn = seedRow(walletA.id, day.toString(), "108", account = "Savings", description = "exchange", currency = "USD")
+        val bOut = seedRow(walletB.id, day.toString(), "-100", account = "Main", description = "exchange")
+        val bIn = seedRow(walletB.id, day.toString(), "108", account = "Savings", description = "exchange", currency = "USD")
+        fxProvider.days = listOf(FxDay(day, "EUR", mapOf("USD" to BigDecimal("1.08"))))
+
+        services.transfers.scan(walletA.id, day, day)
+        awaitGrouped(bOut, bIn)
+
+        val groupA = groupOf(aOut)
+        assertNotNull(groupA)
+        assertEquals(groupA, groupOf(aIn))
+        assertEquals(1, fxProvider.calls.size, "the propagation round must not fetch the same dates again")
     }
 }

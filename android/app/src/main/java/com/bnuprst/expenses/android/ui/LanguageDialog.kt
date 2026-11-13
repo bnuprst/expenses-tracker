@@ -34,15 +34,17 @@ fun LanguageDialog(onDismiss: () -> Unit) {
     )
     AlertDialog(
         onDismissRequest = onDismiss,
+        // Deliberately icon-less: NewWalletDialog's icon is wallet-specific, and there is no
+        // language drawable, so inventing an unrelated glyph here would not be consistent.
         title = { Text(stringResource(R.string.action_language)) },
         text = {
             Column(Modifier.fillMaxWidth()) {
                 options.forEach { (tag, res) ->
                     ListItem(
-                        headlineContent = { Text(stringResource(res)) },
+                        headlineContent = { Text(stringResource(res), maxLines = 1) },
                         trailingContent = if (tag == saved) ({ Icon(Icons.Default.Check, null, tint = MaterialTheme.colorScheme.primary) }) else null,
                         colors = ListItemDefaults.colors(containerColor = Color.Transparent),
-                        modifier = Modifier.clickable {
+                        modifier = Modifier.fillMaxWidth().clickable {
                             onDismiss()
                             if (tag != saved && AppLocale.save(context, tag)) (context as? Activity)?.recreate()
                         },

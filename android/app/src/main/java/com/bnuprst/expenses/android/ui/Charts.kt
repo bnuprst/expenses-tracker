@@ -5,6 +5,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -27,14 +28,21 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.min
 
 data class Slice(val value: Float, val color: Color)
 
-/** Ring chart; [center] is drawn in the hole. Small gaps keep adjacent slices apart. */
+/**
+ * Ring chart; [center] is drawn in the hole. Small gaps keep adjacent slices apart.
+ * [modifier] must give the chart a bounded size (the only caller passes `Modifier.size(200.dp)`),
+ * so the hole can be measured and [center] constrained to it.
+ */
 @Composable
 fun DonutChart(slices: List<Slice>, modifier: Modifier = Modifier, thickness: Dp = 22.dp, center: @Composable BoxScope.() -> Unit = {}) {
     val track = MaterialTheme.colorScheme.surfaceContainerHighest
-    Box(modifier, contentAlignment = Alignment.Center) {
+    BoxWithConstraints(modifier, contentAlignment = Alignment.Center) {
+        val outer = min(maxWidth, maxHeight)
+        val hole = (outer - thickness * 2).coerceAtLeast(0.dp)
         Canvas(Modifier.matchParentSize()) {
             val stroke = thickness.toPx()
             val diameter = size.minDimension - stroke
@@ -51,7 +59,7 @@ fun DonutChart(slices: List<Slice>, modifier: Modifier = Modifier, thickness: Dp
                 start += sweep
             }
         }
-        center()
+        Box(Modifier.size(hole * 0.70f), contentAlignment = Alignment.Center) { center() }
     }
 }
 

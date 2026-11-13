@@ -81,4 +81,17 @@ class TranslatedStringsTest {
         assertEquals("Товари для дому", s("uk", R.string.cat_household))
         assertEquals("Житло та оренда", s("uk", R.string.cat_housing))
     }
+
+    @Test
+    fun `accounts heading is translated`() {
+        assertEquals("Accounts", s("en", R.string.banks_accounts_title))
+        assertEquals("Рахунки", s("uk", R.string.banks_accounts_title))
+        assertEquals("Rachunki", s("pl", R.string.banks_accounts_title))
+    }
+
+    @Test
+    fun `shortened labels keep the new wording`() {
+        assertEquals("Прострочено", s("uk", R.string.status_expired))
+        assertEquals("Sprawdź", s("pl", R.string.tab_review))
+    }
 }

@@ -13,6 +13,8 @@ import com.bnuprst.expenses.db.Rules
 import com.bnuprst.expenses.db.Transactions
 import com.bnuprst.expenses.db.Wallets
 import com.bnuprst.expenses.db.dbQuery
+import com.bnuprst.expenses.fx.FxService
+import com.bnuprst.expenses.fx.FxTable
 import com.bnuprst.expenses.shared.CategoryKind
 import com.bnuprst.expenses.shared.CategorySource
 import com.bnuprst.expenses.shared.CategoryTotalDto
@@ -34,6 +36,8 @@ import org.jetbrains.exposed.sql.SqlExpressionBuilder.eq
 import org.jetbrains.exposed.sql.SqlExpressionBuilder.greaterEq
 import org.jetbrains.exposed.sql.SqlExpressionBuilder.less
 import org.jetbrains.exposed.sql.SqlExpressionBuilder.lessEq
+import org.jetbrains.exposed.sql.SqlExpressionBuilder.isNull
+import org.jetbrains.exposed.sql.SqlExpressionBuilder.notInList
 import org.jetbrains.exposed.sql.and
 import org.jetbrains.exposed.sql.count
 import org.jetbrains.exposed.sql.insert
@@ -89,6 +93,8 @@ data class NewTransaction(
 class TransactionService(
     private val wallets: WalletService,
     private val categorizer: Categorizer,
+    private val fx: FxService,
+    private val locks: WalletLocks,
 ) {
     suspend fun list(
         userId: Long, walletId: Long,
@@ -97,8 +103,9 @@ class TransactionService(
         limit: Int = 200, offset: Long = 0,
     ): List<TransactionDto> {
         wallets.requireRole(userId, walletId)
-        return dbQuery {
-            withAccounts().selectAll().where {
+        val (rows, walletCurrency) = dbQuery {
+            val currency = Wallets.select(Wallets.currency).where { Wallets.id eq walletId }.single()[Wallets.currency]
+            val list = withAccounts().selectAll().where {
                 var cond = Transactions.walletId eq walletId
                 from?.let { cond = cond and (Transactions.bookingDate greaterEq it) }
                 to?.let { cond = cond and (Transactions.bookingDate lessEq it) }
@@ -123,12 +130,15 @@ class TransactionService(
                 )
                 .limit(limit.coerceIn(1, 1000)).offset(offset)
                 .map { it.toDto() }
+            list to currency
         }
+        return enrich(walletCurrency, rows)
     }
 
     /**
      * Per-category totals for [from]..[to] in the wallet currency, plus a six-month trend ending with the
      * month of [to]. Category kind decides the side (transfers are left out); uncategorized rows go by sign.
+     * Rows paired to their opposite leg in another own account are left out too.
      * Sums are signed, so a refund nets against its category.
      */
     suspend fun stats(userId: Long, walletId: Long, from: LocalDate, to: LocalDate): StatsDto {
@@ -150,7 +160,8 @@ class TransactionService(
 
         return dbQuery {
             val currency = Wallets.select(Wallets.currency).where { Wallets.id eq walletId }.single()[Wallets.currency]
-            val inWallet = (Transactions.walletId eq walletId) and (Transactions.currency eq currency)
+            val inWallet = (Transactions.walletId eq walletId) and (Transactions.currency eq currency) and
+                Transactions.transferGroup.isNull()
             fun inRange(a: LocalDate, b: LocalDate) = (Transactions.bookingDate greaterEq a) and (Transactions.bookingDate lessEq b)
             // Grouped separately per sign so uncategorized rows can be split into spending and income.
             fun bySign(block: (Op<Boolean>, Boolean) -> Unit) {
@@ -190,9 +201,14 @@ class TransactionService(
                     }
             }
 
+            val transferCategoryIds = kinds.filterValues { it == CategoryKind.TRANSFER }.keys
+            val notTransferCategory = if (transferCategoryIds.isEmpty()) Op.TRUE
+            else (Transactions.categoryId.isNull() or (Transactions.categoryId notInList transferCategoryIds.toList()))
             val otherCurrency = Transactions.select(count)
-                .where { (Transactions.walletId eq walletId) and (Transactions.currency neq currency) and inRange(from, to) }
-                .single()[count]
+                .where {
+                    (Transactions.walletId eq walletId) and (Transactions.currency neq currency) and
+                        inRange(from, to) and Transactions.transferGroup.isNull() and notTransferCategory
+                }.single()[count]
 
             fun List<Pair<Long?, Pair<BigDecimal, Long>>>.dtos() =
                 map { (cat, v) -> CategoryTotalDto(cat, v.first.toPlainString(), v.second.toInt()) }
@@ -211,8 +227,9 @@ class TransactionService(
 
     suspend fun reviewQueue(userId: Long, walletId: Long): List<TransactionDto> {
         wallets.requireRole(userId, walletId)
-        return dbQuery {
-            withAccounts().selectAll()
+        val (rows, walletCurrency) = dbQuery {
+            val currency = Wallets.select(Wallets.currency).where { Wallets.id eq walletId }.single()[Wallets.currency]
+            val list = withAccounts().selectAll()
                 .where {
                     (Transactions.walletId eq walletId) and
                         (Transactions.status inList listOf(TxnStatus.REVIEW.name, TxnStatus.UNCATEGORIZED.name))
@@ -220,7 +237,9 @@ class TransactionService(
                 .orderBy(Transactions.bookingDate to SortOrder.DESC, Transactions.id to SortOrder.DESC)
                 .limit(500)
                 .map { it.toDto() }
+            list to currency
         }
+        return enrich(walletCurrency, rows)
     }
 
     /**
@@ -330,35 +349,81 @@ class TransactionService(
     /**
      * A user's categorization decision: stored as MANUAL, learned into merchant memory, and applied to
      * other not-yet-confirmed transactions of the same merchant in the wallet.
+     *
+     * The whole read-modify-write runs under the shared per-wallet lock, so a concurrent transfer
+     * scan either sees the released group and clears it, or sees `transfer_override = TRUE` and
+     * leaves the row out. Nothing inside the lock fetches or notifies: the FX enrichment of the
+     * returned row happens after it is released.
      */
     suspend fun setCategory(userId: Long, txnId: Long, categoryId: Long): TransactionDto {
-        val row = dbQuery { Transactions.selectAll().where { Transactions.id eq txnId }.singleOrNull() }
+        val initial = dbQuery { Transactions.selectAll().where { Transactions.id eq txnId }.singleOrNull() }
             ?: throw NotFound("txn.not_found")
-        val walletId = row[Transactions.walletId]
+        val walletId = initial[Transactions.walletId]
         wallets.requireRole(userId, walletId)
         requireCategory(walletId, categoryId)
-        val merchantKey = row[Transactions.merchantKey]
-        return dbQuery {
-            Transactions.update({ Transactions.id eq txnId }) {
-                it[Transactions.categoryId] = categoryId
-                it[categorySource] = CategorySource.MANUAL.name
-                it[confidence] = 1.0
-                it[status] = TxnStatus.CATEGORIZED.name
-            }
-            if (Normalizer.isLearnable(merchantKey)) {
-                DbCategorizationStore.learn(walletId, merchantKey, categoryId)
-                Transactions.update({
-                    (Transactions.walletId eq walletId) and (Transactions.merchantKey eq merchantKey) and
-                        (Transactions.status inList listOf(TxnStatus.REVIEW.name, TxnStatus.UNCATEGORIZED.name))
-                }) {
+        val categoryKind = dbQuery {
+            Categories.select(Categories.kind)
+                .where { (Categories.id eq categoryId) and (Categories.walletId eq walletId) }
+                .single()[Categories.kind]
+        }.let { CategoryKind.valueOf(it) }
+        val merchantKey = initial[Transactions.merchantKey]
+
+        val dto = locks.withWallet(walletId) {
+            dbQuery {
+                val row = Transactions.selectAll().where { Transactions.id eq txnId }.single()
+                Transactions.update({ Transactions.id eq txnId }) {
                     it[Transactions.categoryId] = categoryId
-                    it[categorySource] = CategorySource.MEMORY.name
+                    it[categorySource] = CategorySource.MANUAL.name
                     it[confidence] = 1.0
                     it[status] = TxnStatus.CATEGORIZED.name
+                    it[transferOverride] = categoryKind != CategoryKind.TRANSFER
                 }
+                if (categoryKind != CategoryKind.TRANSFER) {
+                    // The user spoke about this row only: release both legs, but the partner keeps
+                    // transfer_override = FALSE so it can pair again with a better candidate.
+                    val group = row[Transactions.transferGroup]
+                    if (group != null) {
+                        Transactions.update({
+                            (Transactions.walletId eq walletId) and (Transactions.transferGroup eq group)
+                        }) { it[Transactions.transferGroup] = null }
+                    }
+                }
+                if (Normalizer.isLearnable(merchantKey)) {
+                    DbCategorizationStore.learn(walletId, merchantKey, categoryId)
+                    Transactions.update({
+                        (Transactions.walletId eq walletId) and (Transactions.merchantKey eq merchantKey) and
+                            (Transactions.status inList listOf(TxnStatus.REVIEW.name, TxnStatus.UNCATEGORIZED.name))
+                    }) {
+                        it[Transactions.categoryId] = categoryId
+                        it[categorySource] = CategorySource.MEMORY.name
+                        it[confidence] = 1.0
+                        it[status] = TxnStatus.CATEGORIZED.name
+                    }
+                }
+                Transactions.selectAll().where { Transactions.id eq txnId }.single().toDto()
             }
-            Transactions.selectAll().where { Transactions.id eq txnId }.single().toDto()
         }
+        // After the lock: enrich() may fetch rates with the default notify = true.
+        return enrich(walletId, listOf(dto)).single()
+    }
+
+    /** Fills baseAmount/baseCurrency/baseRateDate for [rows]; one ranged rate query per call. */
+    private suspend fun enrich(walletId: Long, rows: List<TransactionDto>): List<TransactionDto> {
+        if (rows.isEmpty() || !fx.enabled) return rows
+        val walletCurrency = dbQuery {
+            Wallets.select(Wallets.currency).where { Wallets.id eq walletId }.single()[Wallets.currency]
+        }
+        return enrich(walletCurrency, rows)
+    }
+
+    private suspend fun enrich(walletCurrency: String, rows: List<TransactionDto>): List<TransactionDto> {
+        if (rows.isEmpty() || !fx.enabled) return rows
+        val minDate = rows.minOf { LocalDate.parse(it.bookingDate) }
+        val maxDate = rows.maxOf { LocalDate.parse(it.bookingDate) }
+        runCatching { fx.ensureCovered(minDate, maxDate) }
+            .onFailure { log.warn("FX coverage for a transaction page failed", it) }
+        val table = fx.table(rows.map { it.currency }.toSet() + walletCurrency, minDate, maxDate)
+        return rows.map { it.withBase(walletCurrency, table) }
     }
 
     suspend fun rules(userId: Long, walletId: Long): List<RuleDto> {
@@ -437,6 +502,8 @@ class TransactionService(
 
 private const val RETRY_LIMIT = 50
 
+private val log = org.slf4j.LoggerFactory.getLogger(TransactionService::class.java)
+
 /** Transactions with their bank account, so [toDto] can name the account a row belongs to. */
 private fun withAccounts() = Transactions.join(BankAccounts, JoinType.LEFT, Transactions.bankAccountId, BankAccounts.id)
 private const val TREND_MONTHS = 6
@@ -462,4 +529,20 @@ fun ResultRow.toDto() = TransactionDto(
     // The bank account when the query joined it (see withAccounts), else the imported row's source account.
     account = listOfNotNull(getOrNull(BankAccounts.name), getOrNull(BankAccounts.ibanMasked)).joinToString(" ").ifEmpty { null }
         ?: this[Transactions.sourceAccount],
+    transferGroup = this[Transactions.transferGroup],
 )
+
+/** Fills baseAmount/baseCurrency/baseRateDate from [table]; a row with no usable rate keeps them null. */
+fun TransactionDto.withBase(walletCurrency: String, table: FxTable): TransactionDto {
+    if (!table.enabled) return copy(baseAmount = null, baseCurrency = null, baseRateDate = null)
+    val parsedAmount = amount.toBigDecimalOrNull()
+    val date = runCatching { LocalDate.parse(bookingDate) }.getOrNull()
+    val converted = if (parsedAmount != null && date != null) {
+        table.convert(parsedAmount, currency, walletCurrency, date)
+    } else null
+    return copy(
+        baseCurrency = walletCurrency,
+        baseAmount = converted?.amount?.toPlainString(),
+        baseRateDate = converted?.rateDate?.toString(),
+    )
+}

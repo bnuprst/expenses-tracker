@@ -25,6 +25,9 @@ import org.jetbrains.exposed.sql.SqlExpressionBuilder.like
 import org.jetbrains.exposed.sql.and
 import org.jetbrains.exposed.sql.count
 import org.jetbrains.exposed.sql.insert
+import org.jetbrains.exposed.sql.max
+import org.jetbrains.exposed.sql.min
+import org.jetbrains.exposed.sql.select
 import org.jetbrains.exposed.sql.update
 import org.jetbrains.exposed.sql.insertIgnore
 import org.jetbrains.exposed.sql.selectAll
@@ -35,7 +38,7 @@ import java.time.LocalDate
  * decisions: they are stored as MANUAL and seed merchant memory. Uncategorized rows only go through
  * memory and rules, never the LLM, so a multi-year import costs no model calls.
  */
-class ImportService(private val wallets: WalletService) {
+class ImportService(private val wallets: WalletService, private val scans: TransferScanService) {
 
     suspend fun import(userId: Long, walletId: Long, req: ImportRequest): ImportResult {
         if (wallets.requireRole(userId, walletId) != WalletRole.OWNER) throw Forbidden("import.owner_only")
@@ -118,7 +121,7 @@ class ImportService(private val wallets: WalletService) {
     suspend fun finalize(userId: Long, walletId: Long, source: String): FinalizeImportResult {
         if (wallets.requireRole(userId, walletId) != WalletRole.OWNER) throw Forbidden("import.owner_only")
         if (source.isBlank() || source.contains('%') || source.contains('_')) throw BadRequest("import.invalid_source")
-        return dbQuery {
+        val (result, range) = dbQuery {
             val count = Transactions.id.count()
             val votes = Transactions.select(Transactions.merchantKey, Transactions.categoryId, count)
                 .where {
@@ -149,8 +152,23 @@ class ImportService(private val wallets: WalletService) {
                     it[status] = TxnStatus.CATEGORIZED.name
                 }
             }
-            FinalizeImportResult(learned, recategorized)
+            FinalizeImportResult(learned, recategorized) to importedRange(walletId, source)
         }
+        range?.let { (from, to) -> scans.scan(walletId, from, to) }
+        return result
+    }
+
+    /** Booking-date range of this source's imported rows, or null when it imported nothing. */
+    private fun importedRange(walletId: Long, source: String): Pair<LocalDate, LocalDate>? {
+        val minDate = Transactions.bookingDate.min()
+        val maxDate = Transactions.bookingDate.max()
+        val row = Transactions.select(minDate, maxDate).where {
+            (Transactions.walletId eq walletId) and Transactions.bankAccountId.isNull() and
+                (Transactions.externalId like "$source:%")
+        }.single()
+        val from = row[minDate] ?: return null
+        val to = row[maxDate] ?: return null
+        return from to to
     }
 
     companion object {

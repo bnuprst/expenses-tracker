@@ -69,6 +69,7 @@
     <string name="banks_remove_title">Видалити %1$s?</string>
     <string name="banks_remove_never_authorised">Це підключення так і не було авторизоване.</string>
     <string name="banks_remove_body">Синхронізація припиниться. Уже імпортовані транзакції залишаться.</string>
+    <string name="banks_accounts_title">Рахунки</string>
     <string name="banks_account_fallback">Рахунок</string>
     <string name="banks_last_sync">Остання синхронізація %1$s</string>
     <string name="banks_country_consent">%1$s · згода до %2$s</string>
@@ -77,7 +78,7 @@
     <string name="action_renew_consent">Поновити згоду</string>
     <string name="status_active">Активне</string>
     <string name="status_pending">Очікує</string>
-    <string name="status_expired">Протерміноване</string>
+    <string name="status_expired">Прострочено</string>
     <string name="status_error">Помилка</string>
 
     <string name="search_transactions">Пошук транзакцій</string>
@@ -104,6 +105,7 @@
     <string name="action_apply">Застосувати</string>
     <string name="date_picker_title">Виберіть дати</string>
     <string name="day_partial">Завантажено наразі</string>
+    <string name="day_unconverted">Не конвертовано: немає курсу</string>
     <string name="txn_suggested">Пропозиція: %1$s · торкніться, щоб підтвердити</string>
     <string name="txn_uncategorized_tap">Без категорії · торкніться, щоб вибрати</string>
 
@@ -198,6 +200,12 @@
         <item quantity="few">%1$d транзакції в інших валютах не враховуються.</item>
         <item quantity="many">%1$d транзакцій в інших валютах не враховуються.</item>
         <item quantity="other">%1$d транзакцій в інших валютах не враховуються.</item>
+    </plurals>
+    <plurals name="day_transfers_excluded">
+        <item quantity="one">%1$d переказ між вашими рахунками не враховано.</item>
+        <item quantity="few">%1$d перекази між вашими рахунками не враховано.</item>
+        <item quantity="many">%1$d переказів між вашими рахунками не враховано.</item>
+        <item quantity="other">%1$d переказів між вашими рахунками не враховано.</item>
     </plurals>
     <plurals name="stats_categories_count">
         <item quantity="one">%1$d категорія</item>

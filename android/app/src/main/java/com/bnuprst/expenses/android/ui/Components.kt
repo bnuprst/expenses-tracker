@@ -145,9 +145,9 @@ fun filterCategories(categories: List<CategoryDto>, query: String, display: (Cat
 }
 
 @Composable
-fun CategoryAvatar(name: String, color: Color, size: Dp = 40.dp) {
+fun CategoryAvatar(name: String, color: Color, size: Dp = Dims.AvatarDefault) {
     Box(Modifier.size(size).background(color.copy(alpha = 0.18f), CircleShape), contentAlignment = Alignment.Center) {
-        Text(name.firstOrNull { it.isLetterOrDigit() }?.uppercase() ?: stringResource(R.string.label_unknown), color = color, style = MaterialTheme.typography.titleMedium)
+        Text(name.firstOrNull { it.isLetterOrDigit() }?.uppercase() ?: stringResource(R.string.label_unknown), color = color, style = MaterialTheme.typography.titleMedium, maxLines = 1)
     }
 }
 

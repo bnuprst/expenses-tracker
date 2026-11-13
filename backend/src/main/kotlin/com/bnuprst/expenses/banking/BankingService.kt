@@ -18,6 +18,7 @@ import com.bnuprst.expenses.shared.SyncResultDto
 import com.bnuprst.expenses.i18n.Messages
 import com.bnuprst.expenses.transactions.ImportBoundary
 import com.bnuprst.expenses.transactions.TransactionService
+import com.bnuprst.expenses.transactions.TransferScanService
 import com.bnuprst.expenses.wallets.WalletService
 import io.ktor.http.URLBuilder
 import kotlinx.coroutines.sync.Mutex
@@ -50,6 +51,7 @@ class BankingService(
     private val config: EnableBankingConfig,
     private val wallets: WalletService,
     private val transactions: TransactionService,
+    private val scans: TransferScanService,
     private val clock: () -> Instant = Instant::now,
 ) {
     private val log = LoggerFactory.getLogger(BankingService::class.java)
@@ -280,6 +282,8 @@ class BankingService(
         }
         var fetched = 0
         var inserted = 0
+        var minNew: LocalDate? = null
+        var maxNew: LocalDate? = null
         var error: String? = null
         var errorKey: String? = null
         try {
@@ -302,11 +306,22 @@ class BankingService(
                     val page = api.transactions(acc[BankAccounts.externalUid], from, key, psu)
                     val mapped = TransactionMapper.map(page.transactions, today, seenHashes)
                     fetched += mapped.size
-                    inserted += transactions.importBankTransactions(walletId, acc[BankAccounts.id], mapped, boundary)
+                    val insertedNow = transactions.importBankTransactions(walletId, acc[BankAccounts.id], mapped, boundary)
+                    inserted += insertedNow
+                    if (insertedNow > 0) {
+                        mapped.minOfOrNull { it.bookingDate }?.let { d -> if (minNew == null || d < minNew!!) minNew = d }
+                        mapped.maxOfOrNull { it.bookingDate }?.let { d -> if (maxNew == null || d > maxNew!!) maxNew = d }
+                    }
                     mapped.maxOfOrNull { it.bookingDate }?.let { d -> if (maxDate == null || d > maxDate) maxDate = d }
                     key = page.continuationKey?.takeIf { it.isNotBlank() }
                 } while (key != null)
                 dbQuery { BankAccounts.update({ BankAccounts.id eq acc[BankAccounts.id] }) { it[lastBookingDate] = maxDate } }
+            }
+            val scanFrom = minNew
+            val scanTo = maxNew
+            if (scanFrom != null && scanTo != null) {
+                runCatching { scans.scan(walletId, scanFrom, scanTo) }
+                    .onFailure { log.warn("Transfer scan after sync of connection {} failed", connectionId, it) }
             }
             transactions.retryUncategorized(walletId)
         } catch (e: EnableBankingException) {

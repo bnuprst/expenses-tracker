@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
@@ -98,6 +99,7 @@ fun TransactionsScreen(state: UiState, vm: AppViewModel, onPick: (TransactionDto
             loadingMore = state.loadingMore,
             onLoadMore = vm::loadMore,
             showDailyMovements = true,
+            baseCurrency = state.wallet?.currency,
             empty = empty,
             onClick = onPick,
         )
@@ -166,7 +168,7 @@ private fun FilterRow(filter: TxnFilter, categories: List<CategoryDto>, onChange
     var sortMenu by remember { mutableStateOf(false) }
 
     Row(
-        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 4.dp),
+        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = Dims.Screen, vertical = 8.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -178,16 +180,18 @@ private fun FilterRow(filter: TxnFilter, categories: List<CategoryDto>, onChange
         FilterChip(
             selected = categoryName != null,
             onClick = { pickingCategory = true },
-            label = { Text(categoryName ?: stringResource(R.string.filter_category)) },
+            label = { Text(categoryName ?: stringResource(R.string.filter_category), maxLines = 1, overflow = TextOverflow.Ellipsis) },
             trailingIcon = { Icon(Icons.Default.ArrowDropDown, null, Modifier.size(FilterChipDefaults.IconSize)) },
+            modifier = Modifier.widthIn(max = 220.dp),
         )
         Box {
             FilterChip(
                 selected = filter.period != null,
                 onClick = { periodMenu = true },
-                label = { Text(filter.period?.label() ?: stringResource(R.string.filter_any_time)) },
+                label = { Text(filter.period?.label() ?: stringResource(R.string.filter_any_time), maxLines = 1, overflow = TextOverflow.Ellipsis) },
                 leadingIcon = { Icon(Icons.Default.DateRange, null, Modifier.size(FilterChipDefaults.IconSize)) },
                 trailingIcon = { Icon(Icons.Default.ArrowDropDown, null, Modifier.size(FilterChipDefaults.IconSize)) },
+                modifier = Modifier.widthIn(max = 220.dp),
             )
             DropdownMenu(expanded = periodMenu, onDismissRequest = { periodMenu = false }) {
                 DropdownMenuItem(text = { Text(stringResource(R.string.filter_any_time)) }, onClick = { periodMenu = false; onChange(filter.copy(period = null)) },
@@ -205,9 +209,10 @@ private fun FilterRow(filter: TxnFilter, categories: List<CategoryDto>, onChange
             FilterChip(
                 selected = filter.sort != TxnSort.DATE_DESC,
                 onClick = { sortMenu = true },
-                label = { Text(stringResource(filter.sort.labelRes)) },
+                label = { Text(stringResource(filter.sort.labelRes), maxLines = 1, overflow = TextOverflow.Ellipsis) },
                 leadingIcon = { Icon(painterResource(R.drawable.ic_sort), null, Modifier.size(FilterChipDefaults.IconSize)) },
                 trailingIcon = { Icon(Icons.Default.ArrowDropDown, null, Modifier.size(FilterChipDefaults.IconSize)) },
+                modifier = Modifier.widthIn(max = 220.dp),
             )
             DropdownMenu(expanded = sortMenu, onDismissRequest = { sortMenu = false }) {
                 TxnSort.entries.forEach { s ->
@@ -219,7 +224,7 @@ private fun FilterRow(filter: TxnFilter, categories: List<CategoryDto>, onChange
         if (filter.isActive) {
             TextButton(onClick = { onChange(TxnFilter()) }) {
                 Icon(Icons.Default.Close, null, Modifier.size(FilterChipDefaults.IconSize))
-                Text(stringResource(R.string.action_clear), Modifier.padding(start = 4.dp))
+                Text(stringResource(R.string.action_clear), Modifier.padding(start = 4.dp), maxLines = 1)
             }
         }
     }
@@ -287,6 +292,7 @@ fun TransactionList(
     loadingMore: Boolean = false,
     onLoadMore: () -> Unit = {},
     showDailyMovements: Boolean = false,
+    baseCurrency: String? = null,
 ) {
     if (items.isEmpty()) {
         empty()
@@ -304,11 +310,11 @@ fun TransactionList(
     LazyColumn(Modifier.fillMaxSize(), state = listState) {
         if (groupByDate) {
             items.groupBy { it.bookingDate }.forEach { (date, dayItems) ->
-                val movements = if (showDailyMovements) dailyMovements(dayItems) else emptyList()
+                val totals = if (showDailyMovements) dailyTotals(dayItems, byId, baseCurrency) else null
                 stickyHeader(key = "h-$date") {
                     DayHeader(
                         date = LocalDate.parse(date),
-                        movements = movements,
+                        totals = totals,
                         // Pagination appends at the displayed tail in both date sorts, so the last
                         // booking date is the potentially incomplete group. `hasMore` is conservative.
                         partial = showDailyMovements &&
@@ -333,12 +339,11 @@ fun TransactionList(
 @Composable
 private fun DayHeader(
     date: LocalDate,
-    movements: List<DailyMovements> = emptyList(),
+    totals: DailyTotals? = null,
     partial: Boolean = false,
 ) {
-    val amountColors = LocalAmountColors.current
-    Surface(color = MaterialTheme.colorScheme.surface, modifier = Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 4.dp)) {
+    Surface(color = MaterialTheme.colorScheme.surface, tonalElevation = 0.dp, modifier = Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(start = Dims.Screen, end = Dims.Screen, top = Dims.ItemGap, bottom = 4.dp)) {
             FlowRow(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -347,18 +352,27 @@ private fun DayHeader(
                 Text(
                     formatDay(date), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary,
                 )
-                movements.forEach { movement ->
-                    Text(
-                        formatMoney(movement.incoming, movement.currency, showPlus = true),
-                        style = MaterialTheme.typography.labelLarge,
-                        color = if (movement.incoming.signum() > 0) amountColors.income else MaterialTheme.colorScheme.onSurface,
-                    )
-                    Text(
-                        formatMoney(movement.outgoing, movement.currency, showPlus = false),
-                        style = MaterialTheme.typography.labelLarge,
-                        color = MaterialTheme.colorScheme.onSurface,
-                    )
-                }
+                totals?.base?.let { MovementPair(it, it.converted) }
+                totals?.unconverted?.forEach { MovementPair(it, approximate = false) }
+            }
+            val excluded = totals?.excludedTransfers ?: 0
+            if (excluded > 0) {
+                Text(
+                    pluralStringResource(R.plurals.day_transfers_excluded, excluded, excluded),
+                    modifier = Modifier.padding(top = 4.dp),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 2,
+                )
+            }
+            if (!totals?.unconverted.isNullOrEmpty()) {
+                Text(
+                    stringResource(R.string.day_unconverted),
+                    modifier = Modifier.padding(top = 4.dp),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 2,
+                )
             }
             if (partial) {
                 Text(
@@ -366,10 +380,28 @@ private fun DayHeader(
                     modifier = Modifier.padding(top = 4.dp),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 2,
                 )
             }
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
         }
     }
+}
+
+@Composable
+private fun MovementPair(movement: DailyMovements, approximate: Boolean) {
+    val amountColors = LocalAmountColors.current
+    val prefix = if (approximate) "≈" else ""
+    Text(
+        prefix + formatMoney(movement.incoming, movement.currency, showPlus = true),
+        style = MaterialTheme.typography.labelLarge,
+        color = if (movement.incoming.signum() > 0) amountColors.income else MaterialTheme.colorScheme.onSurface,
+    )
+    Text(
+        prefix + formatMoney(movement.outgoing, movement.currency, showPlus = false),
+        style = MaterialTheme.typography.labelLarge,
+        color = MaterialTheme.colorScheme.onSurface,
+    )
 }
 
 @Composable
@@ -382,7 +414,7 @@ private fun TransactionRow(t: TransactionDto, categories: Map<Long, CategoryDto>
     val amountColors = LocalAmountColors.current
     ListItem(
         modifier = Modifier.clickable { onClick(t) },
-        leadingContent = { CategoryAvatar(categoryName ?: title, if (category != null) categoryColor(category.id) else MaterialTheme.colorScheme.outline) },
+        leadingContent = { CategoryAvatar(categoryName ?: title, if (category != null) categoryColor(category.id) else MaterialTheme.colorScheme.outline, Dims.AvatarDefault) },
         headlineContent = { Text(title, maxLines = 1, overflow = TextOverflow.Ellipsis) },
         supportingContent = {
             val (text, color) = when (t.status) {
@@ -396,8 +428,10 @@ private fun TransactionRow(t: TransactionDto, categories: Map<Long, CategoryDto>
         trailingContent = {
             Text(
                 formatMoney(t.amount, t.currency, showPlus = true),
+                modifier = Modifier.padding(start = 8.dp),
                 style = MaterialTheme.typography.titleSmall,
                 color = if (amount != null && amount.signum() > 0) amountColors.income else MaterialTheme.colorScheme.onSurface,
+                maxLines = 1,
             )
         },
     )

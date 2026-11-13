@@ -127,9 +127,9 @@ cd android
 | GET/POST | `/wallets/{id}/members` | owners add existing users by email |
 | GET | `/wallets/{id}/categories` | |
 | GET/POST | `/wallets/{id}/rules` | |
-| GET/POST | `/wallets/{id}/transactions` | filters: `from`, `to`, `status`, `category` (id or `none`), `q` (description/counterparty search), `sort` (`DATE_DESC`, `DATE_ASC`, `AMOUNT_ASC`, `AMOUNT_DESC`), `limit`, `offset` |
+| GET/POST | `/wallets/{id}/transactions` | filters: `from`, `to`, `status`, `category` (id or `none`), `q` (description/counterparty search), `sort` (`DATE_DESC`, `DATE_ASC`, `AMOUNT_ASC`, `AMOUNT_DESC`), `limit`, `offset`; rows carry `baseAmount`/`baseCurrency`/`baseRateDate` (null when FX is off or no rate is known) |
 | GET | `/wallets/{id}/review` | review queue |
-| GET | `/wallets/{id}/stats?from=&to=` | per-category totals in the wallet currency plus a 6-month trend (defaults to the current month); transfers excluded |
+| GET | `/wallets/{id}/stats?from=&to=` | per-category totals in the wallet currency plus a 6-month trend (defaults to the current month); transfers excluded by category kind or by a detected own-account pair, and not counted in `otherCurrencyCount` |
 | PATCH | `/transactions/{id}` | `{categoryId}`, learns merchant memory |
 | GET | `/banking/aspsps?country=FI` | available banks |
 | POST | `/wallets/{id}/import` | owner only; bulk history import (see above) |
@@ -137,5 +137,33 @@ cd android
 | GET | `/bank-connections?wallet=` | status, consent expiry, accounts, last sync |
 | POST | `/bank-connections/{id}/sync`, `/bank-connections/{id}/reauthorize` | |
 
+## Currencies and internal transfers
+
+**Main currency** is the wallet's currency (`Wallets.currency`). There is no separate per-user currency yet.
+
+**Rates.** Daily reference rates come from `FX_API_BASE` (ECB via Frankfurter by default) and are stored in
+`fx_rates`; `fx_coverage` records which calendar days have already been asked about. The provider publishes on
+business days only, so a booking on a weekend or holiday uses the latest published rate up to `FX_MAX_STALE_DAYS`
+and reports the day actually used as `baseRateDate`. Recent days with no publication yet are provisional and
+retried on the refresh interval until they publish (`FX_PROVISIONAL_DAYS` bounds how long that retry applies). A
+currency the provider does not carry (for example UAH) simply has no rate: those rows stay unconverted rather than
+being counted 1:1, and the app shows them as their own labelled pair. To pin a rate by hand, `INSERT` into
+`fx_rates` and add an `fx_coverage` row with `published = true`.
+
+**Detected transfers.** A movement between two of the user's own accounts is left out of the daily totals and out
+of `/stats`, and is never counted in `otherCurrencyCount`; both legs share a `transfer_group`. Pairing is
+evidence-based: both legs must be in
+identified accounts in the same wallet, at most 3 days apart, with an exact equal amount in one currency (or within
+2% after conversion across currencies), **plus** one of: matching IBAN digit suffixes, a transfer/exchange keyword,
+or the shape of a same-day, same-account two-currency exchange. Rows whose account is unknown (manually added
+transactions) never pair, and unrelated look-alikes that merely share an amount and date stay visible. Explicitly
+assigning a non-transfer category to either leg (`PATCH /transactions/{id}`) releases the pair and a later scan
+does not re-flag it; a category supplied by a CSV import does **not** suppress detection. Categorizing a row with a
+`TRANSFER` category excludes it by hand.
+
+When a newly fetched rate completes a pair, every wallet those dates can serve is rescanned in the background, so
+a pair can appear without a new import. Only the app's **daily** totals are FX-converted: `/stats` totals remain
+wallet-currency-only and are not converted.
+
 ## Not yet built
-Budgets, push notifications (for example, consent renewal reminders), offline mode in the app, a rule editor UI, multi-currency conversion, refresh tokens.
+Budgets, push notifications (for example, consent renewal reminders), offline mode in the app, a rule editor UI, FX-converted statistics totals (daily totals are converted; `/stats` remains wallet-currency-only), refresh tokens.
