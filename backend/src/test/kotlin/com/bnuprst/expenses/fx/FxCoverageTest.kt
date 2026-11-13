@@ -23,6 +23,7 @@ import org.jetbrains.exposed.sql.and
 import org.jetbrains.exposed.sql.count
 import org.jetbrains.exposed.sql.insertIgnore
 import org.jetbrains.exposed.sql.select
+import org.jetbrains.exposed.sql.selectAll
 import java.math.BigDecimal
 import java.time.Duration
 import java.time.Instant
@@ -40,7 +41,7 @@ import kotlin.test.assertTrue
 class FxCoverageTest {
     private val config = FxConfig(
         enabled = true,
-        apiBase = "fake",
+        apiBase = "https://fx.test/v1",
         base = "EUR",
         refreshInterval = Duration.ofHours(12),
         maxStaleDays = 7,
@@ -144,17 +145,75 @@ class FxCoverageTest {
     @Test
     fun `a malformed rate response leaves coverage absent so the day is retried`() = runBlocking {
         val clock = MutableClock(Instant.parse("2026-11-13T00:00:00Z"))
+        var calls = 0
         val engine = MockEngine {
-            respond(
-                """{"base":"EUR","rates":{"2024-05-02":{"USD":"invalid","PLN":"4.30"}}}""",
-                HttpStatusCode.OK,
-                headersOf(HttpHeaders.ContentType, "application/json"),
-            )
+            calls++
+            val body = if (calls == 1) {
+                """{"base":"EUR","rates":{"2024-05-02":{"USD":"invalid","PLN":"4.30"}}}"""
+            } else {
+                """{"base":"EUR","rates":{"2024-05-02":{"USD":1.10,"PLN":4.30}}}"""
+            }
+            respond(body, HttpStatusCode.OK, headersOf(HttpHeaders.ContentType, "application/json"))
         }
         val fx = FxService(FrankfurterClient(HttpClient(engine), config), config, clock)
 
         assertEquals(emptyList(), fx.ensureCovered(date("2024-05-01"), date("2024-05-02")))
         assertEquals(0, coverageCount(date("2024-04-24"), date("2024-05-02")))
+
+        // No manual cache clearing: the failed response wrote no coverage, so the retry fetches again.
+        assertEquals(listOf(date("2024-05-02")), fx.ensureCovered(date("2024-05-01"), date("2024-05-02")))
+        val converted = fx.table(setOf("EUR", "PLN"), date("2024-05-02"), date("2024-05-02"))
+            .convert(BigDecimal("10"), "EUR", "PLN", date("2024-05-02"))
+        assertNotNull(converted)
+        assertEquals(0, BigDecimal("43.000000").compareTo(converted.amount))
+    }
+
+    @Test
+    fun `a numeric body covers the weekend and a second request is served from the cache`() = runBlocking {
+        val clock = MutableClock(Instant.parse("2026-11-13T00:00:00Z"))
+        val requests = mutableListOf<String>()
+        val engine = MockEngine { request ->
+            requests += request.url.toString()
+            respond(
+                """{"base":"EUR","rates":{"2026-10-09":{"PLN":4.30}}}""",
+                HttpStatusCode.OK,
+                headersOf(HttpHeaders.ContentType, "application/json"),
+            )
+        }
+        val fx = FxService(FrankfurterClient(HttpClient(engine), config), config, clock)
+        val friday = date("2026-10-09")
+        val sunday = date("2026-10-11")
+
+        val stored = fx.ensureCovered(sunday, sunday)
+        assertEquals(listOf(friday), stored)
+        assertTrue(requests.single().contains("2026-10-04..2026-10-11"), "seven-day lookback: ${requests.single()}")
+        assertTrue(requests.single().contains("base=EUR"), "provider base parameter: ${requests.single()}")
+
+        val rate = dbQuery {
+            FxRates.selectAll().where {
+                (FxRates.asOf eq friday) and (FxRates.base eq "EUR") and (FxRates.quote eq "PLN")
+            }.single()
+        }
+        assertEquals(0, BigDecimal("4.30").compareTo(rate[FxRates.rate]))
+        assertEquals("frankfurter-ecb", rate[FxRates.rateSource])
+
+        suspend fun published(day: LocalDate): Boolean? = dbQuery {
+            FxCoverage.select(FxCoverage.published).where {
+                (FxCoverage.base eq "EUR") and (FxCoverage.asOf eq day)
+            }.singleOrNull()?.get(FxCoverage.published)
+        }
+        assertEquals(true, published(friday))
+        assertEquals(false, published(date("2026-10-10")))
+        assertEquals(false, published(sunday))
+
+        val converted = fx.table(setOf("EUR", "PLN"), friday, sunday)
+            .convert(BigDecimal("-10"), "EUR", "PLN", sunday)
+        assertNotNull(converted)
+        assertEquals(0, BigDecimal("-43.000000").compareTo(converted.amount))
+        assertEquals(friday, converted.rateDate)
+
+        assertEquals(emptyList(), fx.ensureCovered(sunday, sunday))
+        assertEquals(1, requests.size, "cached coverage must not hit the provider again")
     }
 
     @Test
