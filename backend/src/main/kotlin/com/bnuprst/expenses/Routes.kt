@@ -51,7 +51,7 @@ fun Application.routes(s: Services) = routing {
 
         // Bank redirect target: unauthenticated, identified by the one-time `state`.
         get("/banking/callback") {
-            val banking = s.banking ?: throw NotFound("Bank sync is not configured")
+            val banking = s.banking ?: throw NotFound("bank.not_configured")
             val p = call.request.queryParameters
             val (redirect, connectionId) = banking.handleCallback(p["state"], p["code"], p["error"], p["error_description"])
             connectionId?.let { id ->
@@ -95,11 +95,11 @@ private fun Route.walletRoutes(s: Services) = route("/wallets") {
                     call.userId(), call.longParam("walletId"),
                     from = q["from"]?.let(::parseDate),
                     to = q["to"]?.let(::parseDate),
-                    status = q["status"]?.let { runCatching { TxnStatus.valueOf(it.uppercase()) }.getOrNull() ?: throw BadRequest("Invalid status") },
-                    categoryId = q["category"]?.takeIf { it != "none" }?.let { it.toLongOrNull() ?: throw BadRequest("Invalid category") },
+                    status = q["status"]?.let { runCatching { TxnStatus.valueOf(it.uppercase()) }.getOrNull() ?: throw BadRequest("txn.invalid_status") },
+                    categoryId = q["category"]?.takeIf { it != "none" }?.let { it.toLongOrNull() ?: throw BadRequest("txn.invalid_category") },
                     query = q["q"],
                     uncategorized = q["category"] == "none",
-                    sort = q["sort"]?.let { runCatching { TxnSort.valueOf(it.uppercase()) }.getOrNull() ?: throw BadRequest("Invalid sort") }
+                    sort = q["sort"]?.let { runCatching { TxnSort.valueOf(it.uppercase()) }.getOrNull() ?: throw BadRequest("txn.invalid_sort") }
                         ?: TxnSort.DATE_DESC,
                     limit = q["limit"]?.toIntOrNull() ?: 200,
                     offset = q["offset"]?.toLongOrNull() ?: 0,
@@ -126,13 +126,13 @@ private fun Route.walletRoutes(s: Services) = route("/wallets") {
             call.respond(s.imports.import(call.userId(), call.longParam("walletId"), req))
         }
         post("/import/finalize") {
-            val source = call.request.queryParameters["source"] ?: throw BadRequest("source is required")
+            val source = call.request.queryParameters["source"] ?: throw BadRequest("import.source_required")
             call.respond(s.imports.finalize(call.userId(), call.longParam("walletId"), source))
         }
         // Everything that still needs a human: low-confidence suggestions and rows nothing could categorize.
         get("/review") { call.respond(s.transactions.reviewQueue(call.userId(), call.longParam("walletId"))) }
         post("/bank-connections") {
-            val banking = s.banking ?: throw NotFound("Bank sync is not configured")
+            val banking = s.banking ?: throw NotFound("bank.not_configured")
             val req = call.receive<CreateBankConnectionRequest>()
             call.respond(HttpStatusCode.Created, banking.connect(call.userId(), call.longParam("walletId"), req.aspspName, req.country))
         }
@@ -141,24 +141,24 @@ private fun Route.walletRoutes(s: Services) = route("/wallets") {
 
 private fun Route.bankingRoutes(s: Services) {
     get("/banking/aspsps") {
-        val banking = s.banking ?: throw NotFound("Bank sync is not configured")
+        val banking = s.banking ?: throw NotFound("bank.not_configured")
         call.respond(banking.aspsps(call.request.queryParameters["country"]))
     }
     route("/bank-connections") {
         get {
-            val banking = s.banking ?: throw NotFound("Bank sync is not configured")
-            call.respond(banking.list(call.userId(), call.request.queryParameters["wallet"]?.toLongOrNull()))
+            val banking = s.banking ?: throw NotFound("bank.not_configured")
+            call.respond(banking.list(call.userId(), call.request.queryParameters["wallet"]?.toLongOrNull(), call.lang()))
         }
         post("/{id}/sync") {
-            val banking = s.banking ?: throw NotFound("Bank sync is not configured")
-            call.respond(banking.syncForUser(call.userId(), call.longParam("id"), call.psu()))
+            val banking = s.banking ?: throw NotFound("bank.not_configured")
+            call.respond(banking.syncForUser(call.userId(), call.longParam("id"), call.psu(), call.lang()))
         }
         post("/{id}/reauthorize") {
-            val banking = s.banking ?: throw NotFound("Bank sync is not configured")
+            val banking = s.banking ?: throw NotFound("bank.not_configured")
             call.respond(banking.reauthorize(call.userId(), call.longParam("id")))
         }
         delete("/{id}") {
-            val banking = s.banking ?: throw NotFound("Bank sync is not configured")
+            val banking = s.banking ?: throw NotFound("bank.not_configured")
             banking.delete(call.userId(), call.longParam("id"))
             call.respond(HttpStatusCode.NoContent)
         }
@@ -169,9 +169,9 @@ private fun ApplicationCall.userId(): Long =
     principal<JWTPrincipal>()?.payload?.subject?.toLongOrNull() ?: throw Unauthorized()
 
 private fun ApplicationCall.longParam(name: String): Long =
-    parameters[name]?.toLongOrNull() ?: throw BadRequest("Invalid $name")
+    parameters[name]?.toLongOrNull() ?: throw BadRequest("txn.invalid_param", name)
 
-private fun parseDate(s: String): LocalDate = runCatching { LocalDate.parse(s) }.getOrElse { throw BadRequest("Invalid date: $s") }
+private fun parseDate(s: String): LocalDate = runCatching { LocalDate.parse(s) }.getOrElse { throw BadRequest("txn.invalid_date", s) }
 
 /**
  * The user's address and client for a request they made themselves. Behind the edge proxy the client is the last

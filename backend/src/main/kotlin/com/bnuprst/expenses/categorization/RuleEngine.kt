@@ -35,12 +35,13 @@ object RuleEngine {
     }
 
     /** Validation used when rules are created. Returns an error message or null. */
+    /** Validation used when rules are created. Returns a Messages key, or null when the rule is valid. */
     fun validate(field: RuleField, op: RuleOp, value: String): String? = when {
-        value.isBlank() -> "Value is required"
-        field == RuleField.AMOUNT && op !in setOf(RuleOp.GT, RuleOp.LT, RuleOp.EQUALS) -> "Amount rules support GT, LT, EQUALS"
-        field == RuleField.AMOUNT && value.toBigDecimalOrNull() == null -> "Amount value must be a number"
-        field != RuleField.AMOUNT && op in setOf(RuleOp.GT, RuleOp.LT) -> "GT/LT only apply to AMOUNT"
-        op == RuleOp.REGEX && runCatching { Regex(value) }.isFailure -> "Invalid regex"
+        value.isBlank() -> "rule.value_required"
+        field == RuleField.AMOUNT && op !in setOf(RuleOp.GT, RuleOp.LT, RuleOp.EQUALS) -> "rule.amount_ops"
+        field == RuleField.AMOUNT && value.toBigDecimalOrNull() == null -> "rule.amount_number"
+        field != RuleField.AMOUNT && op in setOf(RuleOp.GT, RuleOp.LT) -> "rule.gt_lt_amount_only"
+        op == RuleOp.REGEX && runCatching { Regex(value) }.isFailure -> "rule.invalid_regex"
         else -> null
     }
 }

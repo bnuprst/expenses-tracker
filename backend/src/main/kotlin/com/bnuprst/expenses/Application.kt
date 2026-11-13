@@ -12,15 +12,18 @@ import com.bnuprst.expenses.categorization.llm.LlmProvider
 import com.bnuprst.expenses.categorization.llm.OpenAiCompatibleProvider
 import com.bnuprst.expenses.config.AppConfig
 import com.bnuprst.expenses.db.Db
+import com.bnuprst.expenses.i18n.Messages
 import com.bnuprst.expenses.shared.ErrorResponse
 import com.bnuprst.expenses.transactions.TransactionService
 import com.bnuprst.expenses.wallets.WalletService
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO
 import io.ktor.client.plugins.HttpTimeout
+import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.serialization.kotlinx.json.json
 import io.ktor.server.application.Application
+import io.ktor.server.application.ApplicationCall
 import io.ktor.server.application.ApplicationStopping
 import io.ktor.server.application.install
 import io.ktor.server.auth.Authentication
@@ -90,15 +93,22 @@ fun Application.module(services: Services) {
         filter { it.request.path().startsWith("/api") }
     }
     install(StatusPages) {
-        exception<ApiException> { call, e -> call.respond(HttpStatusCode.fromValue(e.status), ErrorResponse(e.message ?: "Error")) }
-        exception<BadRequestException> { call, e -> call.respond(HttpStatusCode.BadRequest, ErrorResponse(e.message ?: "Bad request")) }
+        exception<ApiException> { call, e ->
+            val text = e.literal ?: Messages.format(e.key, e.args, call.lang())
+            call.respond(HttpStatusCode.fromValue(e.status), ErrorResponse(text))
+        }
+        exception<BadRequestException> { call, e ->
+            // Ktor's own text (deserialization details) is diagnostic, never user-facing: log it, answer localized.
+            log.warn("Malformed request to {}", call.request.path(), e)
+            call.respond(HttpStatusCode.BadRequest, ErrorResponse(Messages.format("error.bad_request", language = call.lang())))
+        }
         exception<EnableBankingException> { call, e ->
             log.error("Enable Banking request failed", e)
-            call.respond(HttpStatusCode.BadGateway, ErrorResponse("Bank provider error: ${e.apiMessage}"))
+            call.respond(HttpStatusCode.BadGateway, ErrorResponse(Messages.format("error.bank_provider", listOf(e.apiMessage), call.lang())))
         }
         exception<Throwable> { call, e ->
             log.error("Unhandled error", e)
-            call.respond(HttpStatusCode.InternalServerError, ErrorResponse("Internal server error"))
+            call.respond(HttpStatusCode.InternalServerError, ErrorResponse(Messages.format("error.internal", language = call.lang())))
         }
     }
     install(Authentication) {
@@ -111,8 +121,7 @@ fun Application.module(services: Services) {
     routes(services)
 }
 
-private fun Application.startSyncScheduler(config: AppConfig, services: Services) {
-    val banking = services.banking ?: return
+private fun Application.startSyncScheduler(config: AppConfig, services: Services) {    val banking = services.banking ?: return
     val interval = config.enableBanking!!.syncInterval
     val log = LoggerFactory.getLogger("SyncScheduler")
     val job = launch {
@@ -125,3 +134,6 @@ private fun Application.startSyncScheduler(config: AppConfig, services: Services
     }
     monitor.subscribe(ApplicationStopping) { job.cancel() }
 }
+
+/** The request's UI language, from Accept-Language. */
+fun ApplicationCall.lang(): String = Messages.language(request.headers[HttpHeaders.AcceptLanguage])

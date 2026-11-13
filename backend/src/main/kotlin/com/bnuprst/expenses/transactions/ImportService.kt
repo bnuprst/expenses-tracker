@@ -38,8 +38,8 @@ import java.time.LocalDate
 class ImportService(private val wallets: WalletService) {
 
     suspend fun import(userId: Long, walletId: Long, req: ImportRequest): ImportResult {
-        if (wallets.requireRole(userId, walletId) != WalletRole.OWNER) throw Forbidden("Only wallet owners can import")
-        if (req.transactions.size > MAX_BATCH) throw BadRequest("At most $MAX_BATCH transactions per request")
+        if (wallets.requireRole(userId, walletId) != WalletRole.OWNER) throw Forbidden("import.owner_only")
+        if (req.transactions.size > MAX_BATCH) throw BadRequest("import.batch_too_large", MAX_BATCH)
         val store = DbCategorizationStore()
         val rules = store.rules(walletId)
 
@@ -65,8 +65,8 @@ class ImportService(private val wallets: WalletService) {
             var inserted = 0
 
             for (t in req.transactions) {
-                val date = runCatching { LocalDate.parse(t.date) }.getOrElse { throw BadRequest("Invalid date '${t.date}' in ${t.externalId}") }
-                val amount = t.amount.toBigDecimalOrNull() ?: throw BadRequest("Invalid amount in ${t.externalId}")
+                val date = runCatching { LocalDate.parse(t.date) }.getOrElse { throw BadRequest("import.invalid_date", t.date, t.externalId) }
+                val amount = t.amount.toBigDecimalOrNull() ?: throw BadRequest("import.invalid_amount", t.externalId)
                 val description = listOfNotNull(t.notes?.takeIf { it.isNotBlank() }, t.payee?.takeIf { it.isNotBlank() })
                     .firstOrNull() ?: "(no description)"
                 val counterparty = t.payee?.trim()?.takeIf { it.isNotEmpty() }
@@ -116,8 +116,8 @@ class ImportService(private val wallets: WalletService) {
      * always wins, and the catch-all key is never learned.
      */
     suspend fun finalize(userId: Long, walletId: Long, source: String): FinalizeImportResult {
-        if (wallets.requireRole(userId, walletId) != WalletRole.OWNER) throw Forbidden("Only wallet owners can import")
-        if (source.isBlank() || source.contains('%') || source.contains('_')) throw BadRequest("Invalid source")
+        if (wallets.requireRole(userId, walletId) != WalletRole.OWNER) throw Forbidden("import.owner_only")
+        if (source.isBlank() || source.contains('%') || source.contains('_')) throw BadRequest("import.invalid_source")
         return dbQuery {
             val count = Transactions.id.count()
             val votes = Transactions.select(Transactions.merchantKey, Transactions.categoryId, count)

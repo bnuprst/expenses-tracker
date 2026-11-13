@@ -133,7 +133,7 @@ class TransactionService(
      */
     suspend fun stats(userId: Long, walletId: Long, from: LocalDate, to: LocalDate): StatsDto {
         wallets.requireRole(userId, walletId)
-        if (from > to) throw BadRequest("from must not be after to")
+        if (from > to) throw BadRequest("txn.range_inverted")
         val kinds = WalletService.categoriesOf(walletId).associate { it.id to it.kind }
         fun side(categoryId: Long?, negative: Boolean): CategoryKind? = when (categoryId?.let { kinds[it] }) {
             CategoryKind.EXPENSE -> CategoryKind.EXPENSE
@@ -261,8 +261,8 @@ class TransactionService(
     suspend fun create(userId: Long, walletId: Long, req: CreateTransactionRequest): TransactionDto {
         wallets.requireRole(userId, walletId)
         val date = parseDate(req.bookingDate)
-        val amount = req.amount.toBigDecimalOrNull() ?: throw BadRequest("Invalid amount")
-        if (req.description.isBlank()) throw BadRequest("Description is required")
+        val amount = req.amount.toBigDecimalOrNull() ?: throw BadRequest("txn.invalid_amount")
+        if (req.description.isBlank()) throw BadRequest("txn.description_required")
         req.categoryId?.let { requireCategory(walletId, it) }
         val currency = req.currency?.uppercase() ?: dbQuery {
             Wallets.selectAll().where { Wallets.id eq walletId }.single()[Wallets.currency]
@@ -333,7 +333,7 @@ class TransactionService(
      */
     suspend fun setCategory(userId: Long, txnId: Long, categoryId: Long): TransactionDto {
         val row = dbQuery { Transactions.selectAll().where { Transactions.id eq txnId }.singleOrNull() }
-            ?: throw NotFound("Transaction not found")
+            ?: throw NotFound("txn.not_found")
         val walletId = row[Transactions.walletId]
         wallets.requireRole(userId, walletId)
         requireCategory(walletId, categoryId)
@@ -387,7 +387,7 @@ class TransactionService(
         val ok = dbQuery {
             Categories.selectAll().where { (Categories.id eq categoryId) and (Categories.walletId eq walletId) }.any()
         }
-        if (!ok) throw BadRequest("Unknown category for this wallet")
+        if (!ok) throw BadRequest("txn.unknown_category")
     }
 
     private fun insertRow(
@@ -431,7 +431,7 @@ class TransactionService(
     private fun parseDate(s: String): LocalDate = try {
         LocalDate.parse(s)
     } catch (e: DateTimeParseException) {
-        throw BadRequest("Invalid date, expected yyyy-MM-dd")
+        throw BadRequest("txn.invalid_date_format")
     }
 }
 

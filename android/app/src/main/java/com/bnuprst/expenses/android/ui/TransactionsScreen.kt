@@ -1,5 +1,6 @@
 package com.bnuprst.expenses.android.ui
 
+import androidx.annotation.StringRes
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -50,6 +51,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.res.pluralStringResource
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.bnuprst.expenses.android.AppViewModel
@@ -66,6 +69,7 @@ import java.time.LocalDate
 import java.time.YearMonth
 import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
+import java.util.Locale
 
 @Composable
 fun TransactionsScreen(state: UiState, vm: AppViewModel, onPick: (TransactionDto) -> Unit) {
@@ -74,15 +78,15 @@ fun TransactionsScreen(state: UiState, vm: AppViewModel, onPick: (TransactionDto
     val filterKey = state.filter.copy(query = "")
     LaunchedEffect(filterKey, state.filter.query) { listState.scrollToItem(0) }
     Column(Modifier.fillMaxSize()) {
-        SearchField(state.filter.query, vm::setQuery, "Search transactions", Modifier.padding(start = 16.dp, end = 16.dp, top = 8.dp))
+        SearchField(state.filter.query, vm::setQuery, stringResource(R.string.search_transactions), Modifier.padding(start = 16.dp, end = 16.dp, top = 8.dp))
         FilterRow(state.filter, state.categories, vm::setFilter)
         val empty: @Composable () -> Unit = {
             when {
                 state.loading -> Unit
                 state.filter.isActive ->
-                    EmptyState(painterResource(R.drawable.ic_receipt_long), "No matching transactions", "Try another search or clear the filters.")
+                    EmptyState(painterResource(R.drawable.ic_receipt_long), stringResource(R.string.txn_empty_filtered_title), stringResource(R.string.txn_empty_filtered_body))
                 else ->
-                    EmptyState(painterResource(R.drawable.ic_receipt_long), "No transactions yet", "Connect a bank in the Banks tab to start syncing.")
+                    EmptyState(painterResource(R.drawable.ic_receipt_long), stringResource(R.string.txn_empty_title), stringResource(R.string.txn_empty_body))
             }
         }
         TransactionList(
@@ -105,14 +109,14 @@ fun ReviewScreen(state: UiState, onPick: (TransactionDto) -> Unit) {
     Column(Modifier.fillMaxSize()) {
         if (state.review.isNotEmpty()) {
             Text(
-                "Confirm suggested categories or pick one. Your choice also applies to other transactions from the same merchant.",
+                stringResource(R.string.review_hint),
                 style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
             )
         }
         TransactionList(
             items = state.review, categories = state.categories, listState = rememberLazyListState(), groupByDate = true,
-            empty = { if (!state.loading) EmptyState(painterResource(R.drawable.ic_inbox), "All caught up", "Nothing needs your review.") },
+            empty = { if (!state.loading) EmptyState(painterResource(R.drawable.ic_inbox), stringResource(R.string.review_empty_title), stringResource(R.string.review_empty_body)) },
             onClick = onPick,
         )
     }
@@ -120,8 +124,11 @@ fun ReviewScreen(state: UiState, onPick: (TransactionDto) -> Unit) {
 
 // --- filters ---
 
-private enum class PeriodPreset(val label: String) {
-    THIS_MONTH("This month"), LAST_MONTH("Last month"), LAST_3_MONTHS("Last 3 months"), THIS_YEAR("This year");
+private enum class PeriodPreset(@StringRes val labelRes: Int) {
+    THIS_MONTH(R.string.period_this_month),
+    LAST_MONTH(R.string.period_last_month),
+    LAST_3_MONTHS(R.string.period_last_3_months),
+    THIS_YEAR(R.string.period_this_year);
 
     fun range(today: LocalDate = LocalDate.now()): DateRange = when (this) {
         THIS_MONTH -> DateRange(today.withDayOfMonth(1), YearMonth.from(today).atEndOfMonth())
@@ -131,22 +138,23 @@ private enum class PeriodPreset(val label: String) {
     }
 }
 
-private val TxnSort.label get() = when (this) {
-    TxnSort.DATE_DESC -> "Newest first"
-    TxnSort.DATE_ASC -> "Oldest first"
-    TxnSort.AMOUNT_ASC -> "Largest expense"
-    TxnSort.AMOUNT_DESC -> "Largest income"
+private val TxnSort.labelRes get() = when (this) {
+    TxnSort.DATE_DESC -> R.string.sort_newest
+    TxnSort.DATE_ASC -> R.string.sort_oldest
+    TxnSort.AMOUNT_ASC -> R.string.sort_largest_expense
+    TxnSort.AMOUNT_DESC -> R.string.sort_largest_income
 }
 
-private val shortDate = DateTimeFormatter.ofPattern("d MMM")
-private val longDate = DateTimeFormatter.ofPattern("d MMM yyyy")
+internal fun shortDate(): DateTimeFormatter = DateTimeFormatter.ofPattern("d MMM", Locale.getDefault())
+internal fun longDate(): DateTimeFormatter = DateTimeFormatter.ofPattern("d MMM yyyy", Locale.getDefault())
 
+@Composable
 fun DateRange.label(): String {
-    PeriodPreset.entries.firstOrNull { it.range() == this }?.let { return it.label }
+    PeriodPreset.entries.firstOrNull { it.range() == this }?.let { return stringResource(it.labelRes) }
     val ym = YearMonth.from(from)
-    if (from == ym.atDay(1) && to == ym.atEndOfMonth()) return from.format(DateTimeFormatter.ofPattern("LLLL yyyy"))
+    if (from == ym.atDay(1) && to == ym.atEndOfMonth()) return from.format(DateTimeFormatter.ofPattern("LLLL yyyy", Locale.getDefault()))
     if (from.dayOfYear == 1 && to == from.withDayOfYear(from.lengthOfYear())) return from.year.toString()
-    return if (from.year == to.year) "${from.format(shortDate)} – ${to.format(longDate)}" else "${from.format(longDate)} – ${to.format(longDate)}"
+    return if (from.year == to.year) "${from.format(shortDate())} – ${to.format(longDate())}" else "${from.format(longDate())} – ${to.format(longDate())}"
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -163,47 +171,47 @@ private fun FilterRow(filter: TxnFilter, categories: List<CategoryDto>, onChange
         verticalAlignment = Alignment.CenterVertically,
     ) {
         val categoryName = when {
-            filter.uncategorized -> "Uncategorized"
-            filter.categoryId != null -> categories.firstOrNull { it.id == filter.categoryId }?.name ?: "Category"
+            filter.uncategorized -> stringResource(R.string.category_uncategorized)
+            filter.categoryId != null -> categories.firstOrNull { it.id == filter.categoryId }?.let { categoryDisplayName(it) } ?: stringResource(R.string.filter_category)
             else -> null
         }
         FilterChip(
             selected = categoryName != null,
             onClick = { pickingCategory = true },
-            label = { Text(categoryName ?: "Category") },
+            label = { Text(categoryName ?: stringResource(R.string.filter_category)) },
             trailingIcon = { Icon(Icons.Default.ArrowDropDown, null, Modifier.size(FilterChipDefaults.IconSize)) },
         )
         Box {
             FilterChip(
                 selected = filter.period != null,
                 onClick = { periodMenu = true },
-                label = { Text(filter.period?.label() ?: "Any time") },
+                label = { Text(filter.period?.label() ?: stringResource(R.string.filter_any_time)) },
                 leadingIcon = { Icon(Icons.Default.DateRange, null, Modifier.size(FilterChipDefaults.IconSize)) },
                 trailingIcon = { Icon(Icons.Default.ArrowDropDown, null, Modifier.size(FilterChipDefaults.IconSize)) },
             )
             DropdownMenu(expanded = periodMenu, onDismissRequest = { periodMenu = false }) {
-                DropdownMenuItem(text = { Text("Any time") }, onClick = { periodMenu = false; onChange(filter.copy(period = null)) },
+                DropdownMenuItem(text = { Text(stringResource(R.string.filter_any_time)) }, onClick = { periodMenu = false; onChange(filter.copy(period = null)) },
                     trailingIcon = { if (filter.period == null) Icon(Icons.Default.Check, null) })
                 PeriodPreset.entries.forEach { p ->
                     val range = p.range()
-                    DropdownMenuItem(text = { Text(p.label) }, onClick = { periodMenu = false; onChange(filter.copy(period = range)) },
+                    DropdownMenuItem(text = { Text(stringResource(p.labelRes)) }, onClick = { periodMenu = false; onChange(filter.copy(period = range)) },
                         trailingIcon = { if (filter.period == range) Icon(Icons.Default.Check, null) })
                 }
                 HorizontalDivider()
-                DropdownMenuItem(text = { Text("Custom range…") }, onClick = { periodMenu = false; customRange = true })
+                DropdownMenuItem(text = { Text(stringResource(R.string.filter_custom_range)) }, onClick = { periodMenu = false; customRange = true })
             }
         }
         Box {
             FilterChip(
                 selected = filter.sort != TxnSort.DATE_DESC,
                 onClick = { sortMenu = true },
-                label = { Text(filter.sort.label) },
+                label = { Text(stringResource(filter.sort.labelRes)) },
                 leadingIcon = { Icon(painterResource(R.drawable.ic_sort), null, Modifier.size(FilterChipDefaults.IconSize)) },
                 trailingIcon = { Icon(Icons.Default.ArrowDropDown, null, Modifier.size(FilterChipDefaults.IconSize)) },
             )
             DropdownMenu(expanded = sortMenu, onDismissRequest = { sortMenu = false }) {
                 TxnSort.entries.forEach { s ->
-                    DropdownMenuItem(text = { Text(s.label) }, onClick = { sortMenu = false; onChange(filter.copy(sort = s)) },
+                    DropdownMenuItem(text = { Text(stringResource(s.labelRes)) }, onClick = { sortMenu = false; onChange(filter.copy(sort = s)) },
                         trailingIcon = { if (filter.sort == s) Icon(Icons.Default.Check, null) })
                 }
             }
@@ -211,14 +219,14 @@ private fun FilterRow(filter: TxnFilter, categories: List<CategoryDto>, onChange
         if (filter.isActive) {
             TextButton(onClick = { onChange(TxnFilter()) }) {
                 Icon(Icons.Default.Close, null, Modifier.size(FilterChipDefaults.IconSize))
-                Text("Clear", Modifier.padding(start = 4.dp))
+                Text(stringResource(R.string.action_clear), Modifier.padding(start = 4.dp))
             }
         }
     }
 
     if (pickingCategory) {
         CategoryPickerSheet(
-            title = "Filter by category",
+            title = stringResource(R.string.filter_by_category),
             categories = categories,
             selectedId = filter.categoryId,
             uncategorizedSelected = filter.uncategorized,
@@ -255,11 +263,11 @@ private fun FilterRow(filter: TxnFilter, categories: List<CategoryDto>, onChange
                         customRange = false
                         onChange(filter.copy(period = DateRange(start, end)))
                     },
-                ) { Text("Apply") }
+                ) { Text(stringResource(R.string.action_apply)) }
             },
-            dismissButton = { TextButton(onClick = { customRange = false }) { Text("Cancel") } },
+            dismissButton = { TextButton(onClick = { customRange = false }) { Text(stringResource(R.string.action_cancel)) } },
         ) {
-            DateRangePicker(pickerState, Modifier.weight(1f), title = { Text("Select dates", Modifier.padding(start = 24.dp, top = 16.dp)) })
+            DateRangePicker(pickerState, Modifier.weight(1f), title = { Text(stringResource(R.string.date_picker_title), Modifier.padding(start = 24.dp, top = 16.dp)) })
         }
     }
 }
@@ -354,7 +362,7 @@ private fun DayHeader(
             }
             if (partial) {
                 Text(
-                    "Loaded so far",
+                    stringResource(R.string.day_partial),
                     modifier = Modifier.padding(top = 4.dp),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -367,19 +375,20 @@ private fun DayHeader(
 @Composable
 private fun TransactionRow(t: TransactionDto, categories: Map<Long, CategoryDto>, showDate: Boolean, onClick: (TransactionDto) -> Unit) {
     val category = t.categoryId?.let { categories[it] }
+    val categoryName = category?.let { categoryDisplayName(it) }
     // Money in names the payer ("From ACME Oy"); money out keeps just the payee, as most rows are purchases.
     val title = (if (t.isIncoming()) t.partyLabel() else t.counterparty) ?: t.description
     val amount = t.amount.toBigDecimalOrNull()
     val amountColors = LocalAmountColors.current
     ListItem(
         modifier = Modifier.clickable { onClick(t) },
-        leadingContent = { CategoryAvatar(category?.name ?: title, if (category != null) categoryColor(category.id) else MaterialTheme.colorScheme.outline) },
+        leadingContent = { CategoryAvatar(categoryName ?: title, if (category != null) categoryColor(category.id) else MaterialTheme.colorScheme.outline) },
         headlineContent = { Text(title, maxLines = 1, overflow = TextOverflow.Ellipsis) },
         supportingContent = {
             val (text, color) = when (t.status) {
-                TxnStatus.REVIEW -> "Suggested: ${category?.name ?: "?"} · tap to confirm" to MaterialTheme.colorScheme.tertiary
-                TxnStatus.UNCATEGORIZED -> "Uncategorized · tap to choose" to MaterialTheme.colorScheme.error
-                TxnStatus.CATEGORIZED -> (category?.name ?: "Uncategorized") to MaterialTheme.colorScheme.onSurfaceVariant
+                TxnStatus.REVIEW -> stringResource(R.string.txn_suggested, category?.let { categoryDisplayName(it) } ?: stringResource(R.string.label_unknown)) to MaterialTheme.colorScheme.tertiary
+                TxnStatus.UNCATEGORIZED -> stringResource(R.string.txn_uncategorized_tap) to MaterialTheme.colorScheme.error
+                TxnStatus.CATEGORIZED -> (categoryName ?: stringResource(R.string.category_uncategorized)) to MaterialTheme.colorScheme.onSurfaceVariant
             }
             val date = if (showDate) "${formatDay(LocalDate.parse(t.bookingDate))} · " else ""
             Text(date + text, color = color, maxLines = 1, overflow = TextOverflow.Ellipsis)

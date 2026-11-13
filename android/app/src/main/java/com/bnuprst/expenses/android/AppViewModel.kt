@@ -3,6 +3,7 @@ package com.bnuprst.expenses.android
 import android.app.Application
 import android.content.Context
 import android.net.Uri
+import androidx.annotation.StringRes
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.bnuprst.expenses.shared.AspspDto
@@ -80,6 +81,11 @@ data class UiState(
 
 class AppViewModel(app: Application) : AndroidViewModel(app) {
     private val prefs = app.getSharedPreferences("session", Context.MODE_PRIVATE)
+
+    /** Localized strings for snackbars: resolved through a context that follows the chosen language. */
+    private fun str(@StringRes id: Int, vararg args: Any?): String =
+        AppLocale.wrap(getApplication()).getString(id, *args)
+
     private val _state = MutableStateFlow(
         UiState(
             serverUrl = prefs.getString("server", "") ?: "",
@@ -92,7 +98,20 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     /** Set by the activity to open bank authorisation pages in a Custom Tab. */
     var openUrl: (String) -> Unit = {}
 
-    private val api = Api(baseUrl = { _state.value.serverUrl }, token = { prefs.getString("token", null) })
+    private var testApi: Api? = null
+    private val defaultApi: Api by lazy {
+        Api(
+            baseUrl = { _state.value.serverUrl },
+            token = { prefs.getString("token", null) },
+            language = { AppLocale.currentTag(app) },
+        )
+    }
+    private val api: Api get() = testApi ?: defaultApi
+
+    /** Test seam: drives this ViewModel against a mock HTTP engine instead of the real one. */
+    internal constructor(app: Application, api: Api) : this(app) {
+        testApi = api
+    }
 
     private val searchInput = MutableStateFlow("")
     private var txnJob: Job? = null
@@ -104,15 +123,21 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch { searchInput.drop(1).debounce(SEARCH_DEBOUNCE_MS).collect { reloadTransactions() } }
     }
 
-    private fun launchTask(block: suspend () -> Unit): Job = viewModelScope.launch {
+    /**
+     * Runs [block] with the language generation that was current when it started. The block guards its
+     * own state writes; an error snackbar is dropped if the language changed meanwhile.
+     */
+    private fun launchTask(block: suspend (generation: Int) -> Unit): Job = viewModelScope.launch {
+        val generation = languageGeneration
         _state.update { it.copy(busy = it.busy + 1, message = null) }
         try {
-            block()
+            block(generation)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            if (e.message == "Unauthorized") logout()
-            _state.update { it.copy(message = e.message ?: e.javaClass.simpleName) }
+            // Status, not text: the server's 401 message is localized.
+            if (e is ApiException && e.status == 401) logout()
+            postMessage(generation, e.message ?: e.javaClass.simpleName)
         } finally {
             _state.update { it.copy(busy = (it.busy - 1).coerceAtLeast(0)) }
         }
@@ -120,12 +145,16 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun dismissMessage() = _state.update { it.copy(message = null) }
 
+    /** Publishes a snackbar unless the work that produced it started before the last language change. */
+    private fun postMessage(generation: Int, text: String?) =
+        _state.update { if (generation == languageGeneration) it.copy(message = text) else it }
+
     fun authenticate(server: String, email: String, password: String, name: String?, register: Boolean) {
         val url = server.trim()
         // Release builds refuse cleartext anyway (no network security exception); say why up front instead
         // of failing with a cryptic network error - and never send the password over http.
         if (!url.startsWith("https://") && !(BuildConfig.DEBUG && url.startsWith("http://"))) {
-            _state.update { it.copy(message = "The server URL must start with https://") }
+            _state.update { it.copy(message = str(R.string.msg_https_required)) }
             return
         }
         _state.update { it.copy(serverUrl = url) }
@@ -141,6 +170,33 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         prefs.edit().remove("token").apply()
         cancelTxnLoads()
         _state.update { UiState(serverUrl = it.serverUrl) }
+    }
+
+    /** The language the currently loaded server data was fetched with; null until the first onCreate. */
+    private var uiLanguage: String? = null
+
+    /**
+     * Incremented whenever the UI language changes. Work started under an older generation must not
+     * publish its (old-language) results, or a slow English response would undo the Ukrainian refetch.
+     */
+    @Volatile
+    private var languageGeneration = 0
+
+    /**
+     * Called from MainActivity.onCreate. The ViewModel survives the recreation that a language change
+     * causes (in-app switcher below API 33, the framework on 33+), so server-rendered text already in
+     * state — BankConnectionDto.lastSyncError above all — would otherwise stay in the previous language.
+     * A stale snackbar is dropped rather than re-rendered: it may describe a finished one-off action.
+     */
+    fun onUiLanguage(tag: String) {
+        val previous = uiLanguage
+        uiLanguage = tag
+        if (previous == null || previous == tag) return   // cold start or a plain rotation: nothing to do
+        // Anything still in flight was requested with the old language; its response is now stale.
+        languageGeneration++
+        _state.update { it.copy(message = null, stats = null) }
+        if (_state.value.loggedIn) loadWallets()
+        refreshWallet()
     }
 
     fun loadWallets() = launchTask { refreshWallets() }
@@ -180,24 +236,28 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun refreshWallet(): Job {
         val wallet = _state.value.wallet ?: return Job().apply { complete() }
-        return launchTask {
+        return launchTask { generation ->
             val categories = api.categories(wallet.id)
             // Always loaded: the Review destination shows its size as a badge.
             val review = api.review(wallet.id)
-            updateWallet(wallet.id) { it.copy(categories = categories, review = review) }
-            if (_state.value.wallet?.id != wallet.id) return@launchTask
+            updateWallet(wallet.id, generation) { it.copy(categories = categories, review = review) }
+            // Superseded by a language change or another wallet: don't spend a request on stale state.
+            if (generation != languageGeneration || _state.value.wallet?.id != wallet.id) return@launchTask
             when (_state.value.tab) {
                 WalletTab.TRANSACTIONS -> launchTxnLoad { gen -> fetchTransactions(wallet.id, append = false, gen) }.join()
                 WalletTab.REVIEW -> Unit
-                WalletTab.STATS -> fetchStats(wallet.id)
-                WalletTab.BANKS -> api.connections(wallet.id).let { c -> updateWallet(wallet.id) { it.copy(connections = c) } }
+                WalletTab.STATS -> fetchStats(wallet.id, generation)
+                WalletTab.BANKS -> api.connections(wallet.id).let { c -> updateWallet(wallet.id, generation) { it.copy(connections = c) } }
             }
         }
     }
 
-    /** Applies [block] only while [walletId] is still open, so a slow response can't land in another wallet. */
-    private fun updateWallet(walletId: Long, block: (UiState) -> UiState) =
-        _state.update { if (it.wallet?.id == walletId) block(it) else it }
+    /**
+     * Applies [block] only while [walletId] is still open and the response belongs to the current UI
+     * language, so a slow response can't land in another wallet or restore the previous language.
+     */
+    private fun updateWallet(walletId: Long, generation: Int, block: (UiState) -> UiState) =
+        _state.update { if (it.wallet?.id == walletId && generation == languageGeneration) block(it) else it }
 
     // --- transactions: search, filters, paging ---
 
@@ -282,11 +342,16 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         // The server applies the decision to other pending transactions of the same merchant too,
         // so reload everything currently shown.
         val w = _state.value.wallet?.takeIf { it.id == txn.walletId } ?: return@launchTask
+        // These reads start now, after the mutation, so they are requested in the language current now
+        // and must be guarded by the generation current now: a slow mutation can outlive a language
+        // switch, and its results are newer than the switch's own refresh. Only snackbars belong to the
+        // generation the task started with.
+        val readGeneration = languageGeneration
         val review = api.review(w.id)
-        updateWallet(w.id) { it.copy(review = review) }
+        updateWallet(w.id, readGeneration) { it.copy(review = review) }
         if (_state.value.wallet?.id != w.id) return@launchTask
         if (_state.value.transactions.isNotEmpty()) launchTxnLoad { gen -> refetchLoaded(w.id, gen) }.join()
-        if (_state.value.stats != null) fetchStats(w.id)
+        if (_state.value.stats != null) fetchStats(w.id, readGeneration)
     }
 
     // --- statistics ---
@@ -295,13 +360,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         // The old figures belong to another period; drop them so a failed load can't leave them on screen.
         _state.update { it.copy(statsPeriod = period, stats = null) }
         val wallet = _state.value.wallet ?: return
-        launchTask { fetchStats(wallet.id) }
+        launchTask { generation -> fetchStats(wallet.id, generation) }
     }
 
-    private suspend fun fetchStats(walletId: Long) {
+    private suspend fun fetchStats(walletId: Long, generation: Int) {
         val period = _state.value.statsPeriod
         val stats = api.stats(walletId, period.from, period.to)
-        updateWallet(walletId) { if (it.statsPeriod == period) it.copy(stats = stats) else it }
+        updateWallet(walletId, generation) { if (it.statsPeriod == period) it.copy(stats = stats) else it }
     }
 
     /** Drill-down from a statistics row: that category's transactions over the same period. */
@@ -322,9 +387,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun addMember(email: String) {
         val wallet = _state.value.wallet ?: return
-        launchTask {
+        launchTask { generation ->
             val m = api.addMember(wallet.id, email.trim())
-            _state.update { it.copy(message = "${m.name} added to ${wallet.name}") }
+            postMessage(generation, str(R.string.msg_member_added, m.name, wallet.name))
         }
     }
 
@@ -340,26 +405,37 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun reauthorize(connection: BankConnectionDto) = launchTask { openUrl(api.reauthorize(connection.id).authUrl) }
 
-    fun sync(connection: BankConnectionDto) = launchTask {
+    fun sync(connection: BankConnectionDto) = launchTask { generation ->
         val r = api.sync(connection.id)
-        _state.update { it.copy(message = r.error ?: "Fetched ${r.fetched}, new ${r.inserted}") }
-        _state.value.wallet?.let { w -> api.connections(w.id).let { c -> updateWallet(w.id) { it.copy(connections = c) } } }
+        postMessage(generation, r.error ?: str(R.string.msg_sync_result, r.fetched, r.inserted))
+        _state.value.wallet?.let { w ->
+            // The sync can outlive a language switch. This read starts now, in the current language, so it
+            // is guarded by the generation current now; only the snackbar above stays tied to the
+            // generation the sync started with.
+            val readGeneration = languageGeneration
+            api.connections(w.id).let { c -> updateWallet(w.id, readGeneration) { it.copy(connections = c) } }
+        }
     }
 
-    fun removeConnection(connection: BankConnectionDto) = launchTask {
+    fun removeConnection(connection: BankConnectionDto) = launchTask { generation ->
         api.deleteConnection(connection.id)
-        _state.update { s -> s.copy(connections = s.connections.filter { it.id != connection.id }, message = "Removed ${connection.aspspName}") }
+        _state.update { s -> s.copy(connections = s.connections.filter { it.id != connection.id }) }
+        postMessage(generation, str(R.string.msg_connection_removed, connection.aspspName))
     }
 
     /** Deep link from the backend after bank authorisation. */
     fun onBankRedirect(uri: Uri) {
         val ok = uri.getQueryParameter("status") == "ok"
-        _state.update {
-            it.copy(
-                tab = WalletTab.BANKS,
-                message = if (ok) "Bank connected; first sync is running" else "Bank connection failed: ${uri.getQueryParameter("message") ?: "unknown error"}",
-            )
+        val detail = uri.getQueryParameter("message")
+        val message = when {
+            ok -> str(R.string.msg_bank_connected)
+            uri.getQueryParameter("code") == "unknown_state" -> str(R.string.msg_bank_state_unknown)
+            uri.getQueryParameter("code") == "cancelled" -> str(R.string.msg_bank_cancelled)
+            uri.getQueryParameter("code") == "session_failed" -> str(R.string.msg_bank_session_failed)
+            // "provider_error", or an older/unknown code: show the bank's own words.
+            else -> str(R.string.msg_bank_failed, detail ?: str(R.string.msg_unknown_error))
         }
+        _state.update { it.copy(tab = WalletTab.BANKS, message = message) }
         refreshWallet()
     }
 }

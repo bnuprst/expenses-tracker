@@ -15,6 +15,7 @@ import com.bnuprst.expenses.shared.BankAuthResponse
 import com.bnuprst.expenses.shared.BankConnectionDto
 import com.bnuprst.expenses.shared.ConnectionStatus
 import com.bnuprst.expenses.shared.SyncResultDto
+import com.bnuprst.expenses.i18n.Messages
 import com.bnuprst.expenses.transactions.ImportBoundary
 import com.bnuprst.expenses.transactions.TransactionService
 import com.bnuprst.expenses.wallets.WalletService
@@ -103,7 +104,7 @@ class BankingService(
 
     private suspend fun startAuth(connectionId: Long, aspspName: String, country: String): String {
         val aspsp = api.aspsps(country).firstOrNull { it.name == aspspName }
-            ?: throw BadRequest("Unknown bank '$aspspName' in $country")
+            ?: throw BadRequest("bank.unknown", aspspName, country)
         var validity = Duration.ofDays(config.consentDays)
         aspsp.maximumConsentValidity?.let { validity = minOf(validity, Duration.ofSeconds(it)) }
         val validUntil = OffsetDateTime.ofInstant(clock().plus(validity).minusSeconds(60), ZoneOffset.UTC)
@@ -120,7 +121,7 @@ class BankingService(
      */
     suspend fun handleCallback(state: String?, code: String?, error: String?, errorDescription: String?): Pair<String, Long?> {
         val row = state?.let { s -> dbQuery { BankConnections.selectAll().where { BankConnections.authState eq s }.singleOrNull() } }
-            ?: return appRedirect(null, "error", "Unknown or expired authorisation state") to null
+            ?: return appRedirect(null, "error", "unknown_state", null) to null
         val id = row[BankConnections.id]
         if (error != null || code == null) {
             dbQuery {
@@ -129,7 +130,8 @@ class BankingService(
                     if (row[BankConnections.status] == ConnectionStatus.PENDING.name) it[status] = ConnectionStatus.ERROR.name
                 }
             }
-            return appRedirect(id, "error", errorDescription ?: error ?: "Authorisation cancelled") to null
+            val detail = errorDescription ?: error
+            return appRedirect(id, "error", if (detail == null) "cancelled" else "provider_error", detail) to null
         }
         return try {
             val (session, accounts) = api.createSession(code)
@@ -142,11 +144,11 @@ class BankingService(
                 }
                 for (a in accounts) upsertAccount(id, a)
             }
-            appRedirect(id, "ok", null) to id
+            appRedirect(id, "ok", null, null) to id
         } catch (e: Exception) {
             log.warn("Creating Enable Banking session failed for connection {}", id, e)
             dbQuery { BankConnections.update({ BankConnections.id eq id }) { it[authState] = null } }
-            appRedirect(id, "error", "Could not complete bank authorisation") to null
+            appRedirect(id, "error", "session_failed", null) to null
         }
     }
 
@@ -175,14 +177,16 @@ class BankingService(
         }
     }
 
-    private fun appRedirect(connectionId: Long?, status: String, message: String?): String =
+    /** [code] is a stable token the app maps to its own localized text; [message] carries provider detail. */
+    private fun appRedirect(connectionId: Long?, status: String, code: String?, message: String?): String =
         URLBuilder(config.appRedirectUrl).apply {
             parameters.append("status", status)
             connectionId?.let { parameters.append("connection", it.toString()) }
+            code?.let { parameters.append("code", it) }
             message?.let { parameters.append("message", it) }
         }.buildString()
 
-    suspend fun list(userId: Long, walletId: Long?): List<BankConnectionDto> = dbQuery {
+    suspend fun list(userId: Long, walletId: Long?, lang: String = Messages.DEFAULT): List<BankConnectionDto> = dbQuery {
         val rows = BankConnections.join(WalletMembers, JoinType.INNER, BankConnections.walletId, WalletMembers.walletId).selectAll().where {
             var c = WalletMembers.userId eq userId
             walletId?.let { c = c and (BankConnections.walletId eq it) }
@@ -195,11 +199,11 @@ class BankingService(
             }
             val lastRun = SyncRuns.selectAll().where { SyncRuns.connectionId eq id }
                 .orderBy(SyncRuns.startedAt, SortOrder.DESC).limit(1).singleOrNull()
-            row.toDto(accounts, lastRun)
+            row.toDto(accounts, lastRun, lang)
         }
     }
 
-    private fun ResultRow.toDto(accounts: List<BankAccountDto>, lastRun: ResultRow?): BankConnectionDto {
+    private fun ResultRow.toDto(accounts: List<BankAccountDto>, lastRun: ResultRow?, lang: String): BankConnectionDto {
         val validUntil = this[BankConnections.validUntil]
         val status = ConnectionStatus.valueOf(this[BankConnections.status])
         return BankConnectionDto(
@@ -212,14 +216,15 @@ class BankingService(
             renewSoon = status == ConnectionStatus.EXPIRED ||
                 (validUntil != null && validUntil.toInstant().isBefore(clock().plus(RENEW_WARNING))),
             lastSyncAt = lastRun?.get(SyncRuns.finishedAt)?.toInstant()?.toString(),
-            lastSyncError = lastRun?.get(SyncRuns.error),
+            lastSyncError = lastRun?.get(SyncRuns.errorKey)?.let { Messages.format(it, language = lang) }
+                ?: lastRun?.get(SyncRuns.error),
             accounts = accounts,
         )
     }
 
-    suspend fun syncForUser(userId: Long, connectionId: Long, psu: PsuContext?): SyncResultDto {
+    suspend fun syncForUser(userId: Long, connectionId: Long, psu: PsuContext?, lang: String = Messages.DEFAULT): SyncResultDto {
         requireConnection(userId, connectionId)
-        return sync(connectionId, psu)
+        return sync(connectionId, psu, lang)
     }
 
     /**
@@ -245,25 +250,25 @@ class BankingService(
      * Returns at once if this connection is already syncing (e.g. the initial sync after authorisation).
      * [psu] is set when the user started the sync; without it the bank counts it against its daily limit.
      */
-    suspend fun sync(connectionId: Long, psu: PsuContext? = null): SyncResultDto {
+    suspend fun sync(connectionId: Long, psu: PsuContext? = null, lang: String = Messages.DEFAULT): SyncResultDto {
         val lock = locks.computeIfAbsent(connectionId) { Mutex() }
-        if (!lock.tryLock()) return SyncResultDto(0, 0, "A sync is already running for this connection")
+        if (!lock.tryLock()) return SyncResultDto(0, 0, Messages.format("bank.sync_running", language = lang))
         try {
-            return syncLocked(connectionId, psu)
+            return syncLocked(connectionId, psu, lang)
         } finally {
             lock.unlock()
         }
     }
 
-    private suspend fun syncLocked(connectionId: Long, psu: PsuContext?): SyncResultDto {
+    private suspend fun syncLocked(connectionId: Long, psu: PsuContext?, lang: String): SyncResultDto {
         val conn = dbQuery { BankConnections.selectAll().where { BankConnections.id eq connectionId }.single() }
         val walletId = conn[BankConnections.walletId]
         if (conn[BankConnections.status] != ConnectionStatus.ACTIVE.name) {
-            return SyncResultDto(0, 0, "Connection is ${conn[BankConnections.status]}")
+            return SyncResultDto(0, 0, Messages.format("bank.connection_status", listOf(Messages.status(conn[BankConnections.status], lang)), lang))
         }
         if (conn[BankConnections.validUntil]?.toInstant()?.isBefore(clock()) == true) {
             setStatus(connectionId, ConnectionStatus.EXPIRED)
-            return SyncResultDto(0, 0, "Consent expired; re-authorise the connection")
+            return SyncResultDto(0, 0, Messages.format("bank.consent_expired", language = lang))
         }
         val runId = dbQuery {
             SyncRuns.insert {
@@ -276,6 +281,7 @@ class BankingService(
         var fetched = 0
         var inserted = 0
         var error: String? = null
+        var errorKey: String? = null
         try {
             val accounts = dbQuery { BankAccounts.selectAll().where { BankAccounts.connectionId eq connectionId }.toList() }
             val today = LocalDate.ofInstant(clock(), ZoneOffset.UTC)
@@ -308,15 +314,17 @@ class BankingService(
             if (e.isConsentProblem) setStatus(connectionId, ConnectionStatus.EXPIRED)
             if (e.isRateLimited) {
                 log.warn("Bank rate limit hit for connection {} ({})", connectionId, if (psu == null) "scheduled" else "user")
-                error = if (psu == null) {
+                val key = if (psu == null) {
                     // The limit is per day, so retrying before the next one only fails again. Midnight UTC is
                     // after midnight in European banks' time zones.
                     val until = LocalDate.ofInstant(clock(), ZoneOffset.UTC).plusDays(1).atStartOfDay().atOffset(ZoneOffset.UTC)
                     dbQuery { BankConnections.update({ BankConnections.id eq connectionId }) { it[syncPausedUntil] = until } }
-                    "The bank's daily limit on automatic refreshes was reached; they resume tomorrow. Sync now still works."
+                    "bank.rate_limit_scheduled"
                 } else {
-                    "The bank is refusing requests for now (rate limit); try again later."
+                    "bank.rate_limit_user"
                 }
+                errorKey = key
+                error = Messages.format(key, language = lang)
             }
         } catch (e: Exception) {
             log.error("Sync failed for connection {}", connectionId, e)
@@ -328,6 +336,7 @@ class BankingService(
                 it[SyncRuns.fetched] = fetched
                 it[SyncRuns.inserted] = inserted
                 it[SyncRuns.error] = error
+                it[SyncRuns.errorKey] = errorKey
             }
         }
         return SyncResultDto(fetched, inserted, error)
@@ -381,11 +390,11 @@ class BankingService(
 
     private suspend fun requireConnection(userId: Long, connectionId: Long): ResultRow {
         val row = dbQuery { BankConnections.selectAll().where { BankConnections.id eq connectionId }.singleOrNull() }
-            ?: throw NotFound("Connection not found")
+            ?: throw NotFound("bank.connection_not_found")
         try {
             wallets.requireRole(userId, row[BankConnections.walletId])
         } catch (e: NotFound) {
-            throw NotFound("Connection not found")
+            throw NotFound("bank.connection_not_found")
         }
         return row
     }

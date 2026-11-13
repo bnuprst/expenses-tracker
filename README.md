@@ -103,6 +103,20 @@ cd android
 ```
 - **Server URL**: you enter it on the login screen. Cleartext HTTP is allowed so a LAN server works during development.
 - **Bank flow**: the bank authorization opens in a Custom Tab, and the app receives the `expenses://bank-connected` deep link when it finishes.
+- **Languages**: English (default and fallback), Ukrainian and Polish. The app follows the system language and can
+  be overridden in-app (wallet list → ⋮ → Language, or the Language button on the login screen). On Android 13+ the
+  in-app switcher writes the framework per-app locale, so Settings → App languages and the in-app picker are the same
+  setting; below 13 the choice is stored in the `session` preferences and applied in `attachBaseContext`. Changing the
+  language refetches server-rendered text, so an error already on screen is re-read in the new language. Translations
+  live in `android/app/src/main/res/values{,-uk,-pl}/strings.xml`. The backend translates its API error messages per
+  request from `Accept-Language` (`backend/src/main/kotlin/com/bnuprst/expenses/i18n/Messages.kt`), and the app sends
+  that header on every request. Seeded category names carry a stable `slug` and are shown in the UI language;
+  categories you create yourself are shown exactly as typed. Bank-provided sync error text is passed through
+  untranslated; backend-generated sync errors are stored as a key and rendered in each reader's language.
+  `StringResourceParityTest` enforces key parity, placeholder parity and per-language plural quantities across
+  `values{,-uk,-pl}`; adding a language means updating `res/xml/locales_config.xml` and `resourceConfigurations`
+  in `android/app/build.gradle.kts` together, and `./gradlew :app:lintDebug` fails on
+  `MissingTranslation`/`ExtraTranslation`/`StringFormat*`.
 
 ## API overview (`/api/v1`, Bearer JWT)
 
